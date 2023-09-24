@@ -189,7 +189,7 @@ This table shows the [peak signal-to-noise ratio](https://en.wikipedia.org/wiki/
 | [Parrots](https://r0k.us/graphics/kodak/kodak/kodim23.png) (Custom)   | 27.77dB  | 27.65dB  | 27.65dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/0c17aae1-8d36-49fc-a418-efc701f9dc6e)|
 | [Parrots](https://r0k.us/graphics/kodak/kodak/kodim23.png) (Adaptive) | 20.42dB  | 20.42dB  | 20.42dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/a8549e82-9409-457e-b605-c134041b755f)|
 
-Knoll and Yliluoma score exactly the same for each image, while the Tetrapal algorithm scores slightly better than the other two using the custom palette and slightly worse when using an adaptive palette. All algorithms scored worse using the adaptive palette, suggesting that a palette generation algorithm specifically catered towards dithering should be preferred in general. It is possible that Tetrapal is better suited to varied colour palettes with a good spread of colours, unlike the generated palettes which tended to contain many similar colours.
+Knoll and Yliluoma score exactly the same for each image, while the Tetrapal algorithm scores slightly better than the other two using the custom palette and slightly worse when using an adaptive palette. All algorithms scored worse using an adaptive palette, suggesting that a palette generation algorithm specifically catered towards dithering should be preferred in general. It is possible that Tetrapal is better suited to varied colour palettes with a good spread of colours, unlike the generated palettes which tended to contain many similar colours.
 
 ---
 
