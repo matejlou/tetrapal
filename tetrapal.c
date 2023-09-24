@@ -2,8 +2,6 @@
 #define TETRAPAL_IMPLEMENTATION
 #include "tetrapal.h"
 
-#include "allocator.h"
-
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
