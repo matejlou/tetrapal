@@ -441,7 +441,7 @@ static int interpolate_2d(const TetrapalData* tetrapal, const int64_t p[3], int*
 static int interpolate_1d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, double* u, double* v);
 
 // ===============================================================
-//		3D Triagulation
+//		3D Triangulation
 // ===============================================================	
 
 static int triangulate_3d(TetrapalData* tetrapal);
