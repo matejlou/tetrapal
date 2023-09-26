@@ -1,5 +1,3 @@
-
-#define TETRAPAL_IMPLEMENTATION
 #include "tetrapal.h"
 
 #include <string.h>
