@@ -60,12 +60,8 @@ extern "C" {
 		[4] https://hal.inria.fr/inria-00102194/document
 	*/
 
-	/* Opaque handle to the delaunay data structure. */
-#ifdef TETRAPAL_IMPLEMENTATION
+	/* Opaque handle to the Tetrapal data structure. */
 	typedef struct TetrapalData TetrapalData;
-#else
-	typedef void TetrapalData;
-#endif
 
 	/* Triangulate a given point set, allocating memory for a new triangulation. */
 	TetrapalData* tetrapal_new(const float *points, const int size);
