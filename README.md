@@ -159,7 +159,7 @@ Point location is performed via stochastic walk[^4], and [spatial indexing](http
 As its main purpose is to process colour palettes, some assumptions have been made to simplify the algorithm. However, Tetrapal can still be used as a general-purpose Delaunay triangulation library provided its limitations are observed. These include:
 * That it is unoptimised compared to more mature Delaunay triangulation libraries, especially for large numbers of points.
 * That it expects the input to be normalised between 0.0 and 1.0.
-* That the desired precision of the input does not exceed 1 / 16,777,216.
+* That the desired precision of the input does not exceed 1 / 16,777,215.
 
 # Performance & Comparison
 
