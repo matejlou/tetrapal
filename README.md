@@ -193,11 +193,11 @@ Knoll and Yliluoma score exactly the same for each image, while the Tetrapal alg
 
 ---
 
-This next table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The data was gathered by tracking the number of calls to `malloc()` and `free()` during triangulation. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size $N$ of the threshold matrix, which is usually <1KB).
+This next table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size $N$ of the threshold matrix, which is usually <1KB).
 
 | Palette Size | 8     | 16    | 32    | 64    | 128   | 256   |
 | :--          | :-:   | :-:   | :-:   | :-:   | :-:   | :-:   | 
-| **Memory**   | 75KB  | 95KB  | 132KB | 256KB | 445KB | 835KB |
+| **Memory**   | 2KB  | 4KB  | 8KB | 16KB | 32KB | 64KB |
 
 ---
 
