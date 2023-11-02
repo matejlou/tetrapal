@@ -1,3689 +1,4472 @@
 #include "tetrapal.h"
-
-#include <string.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <float.h>
 #include <math.h>
 
+/* Allocator functions. */
+#if defined(TETRAPAL_MALLOC) && defined(TETRAPAL_REALLOC) && defined(TETRAPAL_FREE)
+	/* User has defined all of their own allocator functions. */
+#elif !defined(TETRAPAL_MALLOC) && !defined(TETRAPAL_REALLOC) && !defined(TETRAPAL_FREE)
+#include <stdlib.h> /* free(), malloc(), realloc(). */
 #define TETRAPAL_MALLOC(size) malloc(size)
 #define TETRAPAL_REALLOC(ptr, size) realloc(ptr, size)
 #define TETRAPAL_FREE(ptr) free(ptr)
+#else
+#error "Either all or none of MALLOC, REALLOC, and FREE must be defined!"
+#endif
 
+/* Dev-only debug macro. */
 //#define TETRAPAL_DEBUG
 #ifdef TETRAPAL_DEBUG
-	#include <time.h>
-	#include <stdio.h>
-	clock_t TIME_LOCATE;
-	clock_t TIME_STELLATE;
+#include <stdio.h>
+#include <assert.h>
+#define TETRAPAL_ASSERT(condition, message) assert(condition && message)
+#else
+#define TETRAPAL_ASSERT(condition, message)
 #endif
 
-// =========================================================
-//		Geometric Predicates
-// =========================================================
-
-/* Returns the squared distance between [a] and [b]. */
-static double distance_squared(const int64_t a[3], const int64_t b[3]);
-
-/* Returns 1 if [a] and [b] are coincident, returns 0 otherwise. */
-static int is_coincident(const int64_t a[3], const int64_t b[3]);
-
-/* Determine whether the projection of point [c] on the line [a, b] lies before or after point [a].
-	Returns 0 if the projection of [c] is coincident with [a]. */
-static double orient1d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-static int orient1d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-static int orient1d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-
-/* Determine whether the projection of point [c] on the plane defined by [d, e, f] lies on the positive side
-	of the line [a, b]. Assumes [a, b] and [d, e, f] are coplanar. */
-static double orient2d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3]);
-static int orient2d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3]);
-static int orient2d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3]);
-
-/* Determine whether the points [a, b, c, d] form a positively-oriented tetrahedron such that the triangle
-	[a, b, c] has a counterclockwise winding order when seen from [d]. */
-static double orient3d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-static int orient3d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-static int orient3d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-
-/* Determine whether the point [c] lies on the line segment defined by the points [a, b].
-	Assumes [a, b, c] are colinear. Returns positive if it is on the segment, negative if outside,
-	and 0 if it lies exactly on an end point. */
-// static double insegment_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-static int insegment_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-static int insegment_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3]);
-
-/* Determine whether the point [d] lies within the circle passing through [a, b, c]. All
-	points are given in 3D space, and [d] is assumed to be coplanar with [a, b, c]. There
-	is no guarantee of correct behaviour if [d] is not coplanar! */
-// static double incircle_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-static int incircle_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-static int incircle_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3]);
-
-/* Determine whether the point [e] lies in, on, or outside the sphere passing through [a, b, c, d]. */
-// static double insphere_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3]);
-static int insphere_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3]);
-static int insphere_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3]);
-
-// =========================================================
-//		Interval Arithmetic
-// =========================================================
-
-/*
-	Interval representation for floating point values. Used as a static filter
-	for geometric predicates.
-*/
-
-typedef struct
-{
-	double lower, upper;
-} Interval;
-
-static Interval interval(double value);
-static Interval interval_add(const Interval lhs, const Interval rhs);
-static Interval interval_sub(const Interval lhs, const Interval rhs);
-static Interval interval_mul(const Interval lhs, const Interval rhs);
-static int interval_sign(const Interval interval);
-static inline void interval_swap_bounds(Interval* interval);
-static inline double interval_min(const double a, const double b);
-static inline double interval_max(const double a, const double b);
-static inline void interval_add_error(Interval* interval);
-
-#ifdef TETRAPAL_DEBUG
-static void interval_print(const Interval interval);
+#ifndef NULL
+#define NULL ((void*)0)
 #endif
 
-// =========================================================
-//		Extended Precision Integer Arithmetic (BigInt)
-// =========================================================
+/* Maximum value of any unsigned integer type. */
+#define max_of_unsigned(T) (T)(~(T)0) 
 
-/*
-	Struct to represent large signed integers. Digits are represented in base 2^32,
-	stored using 64-bit unsigned integer types to handle the carry from arithmetic operations.
-	No dynamic allocation, so not technically 'arbitrary precision', more like 'extended
-	precision'.
+/* True/false macro constants. */
+#define true 1
+#define false 0
 
-	For now, every digit in the array gets evaluated regardless of the length of the actual number.
-	Improving this would be a welcome change, but it's not high priority yet.
-*/
+/* Typedefs for internal use. */
+typedef float coord_t; /* Type for representing a floating-point coordinate. */
+typedef signed long vertex_t; /* Type for representing a global vertex index. */
+typedef unsigned long simplex_t; /* Type for representing the global simplex index. */
+typedef unsigned char facet_t; /* Type for representing the global cavity facet index. */
+typedef unsigned char local_t; /* Type for representing a local index. */
+typedef signed long error_t; /* Type representing an error code. */
+typedef unsigned char flags_t; /* Type representing a set of bit-flags. */
+typedef unsigned long random_t; /* Type representing a random integer. */
+typedef unsigned long long digit_t; /* Type representing a digit, used for exact airthmetic. */
+typedef unsigned char bool; /* Type representing a boolean. */
 
-enum { BIGINT_SIZE = 8 };
+static const vertex_t VERTEX_INFINITE = -1; /* Value representing the infinite vertex. */
+static const simplex_t SIMPLEX_NULL = max_of_unsigned(simplex_t); /* Value representing a null or invalid simplex. */
+static const facet_t FACET_NULL = max_of_unsigned(facet_t); /* Value representing a null or invalid facet. */
+static const local_t LOCAL_NULL = max_of_unsigned(local_t); /* Value representing a null or invalid local index. */
+static const random_t RANDOM_MAX = 0xffff; /* Maximum value of a randomly generated integer. */
+static const double ARRAY_GROWTH_FACTOR = 1.618; /* Amount to resize arrays when capacity is reached. */
+static const double CAVITY_TABLE_MAX_LOAD = 0.7; /* Maximum load factor of the cavity hash table. */
 
-typedef struct
-{
-	uint64_t digits[BIGINT_SIZE];
-	int sign;
-} BigInt;
-
-static BigInt bigint(const int64_t val);
-static BigInt bigint_zero();
-static BigInt bigint_abs(const BigInt bigint);
-static BigInt bigint_neg(const BigInt bigint);
-static BigInt bigint_add(const BigInt lhs, const BigInt rhs);
-static BigInt bigint_sub(const BigInt lhs, const BigInt rhs);
-static BigInt bigint_mul(const BigInt lhs, const BigInt rhs);
-static int bigint_compare(const BigInt lhs, const BigInt rhs);
-static void bigint_shift_l(BigInt* bigint, unsigned int shift);
-
-#ifdef TETRAPAL_DEBUG
-static int bigint_is_zero(const BigInt bigint);
-static void bigint_print_digits(const BigInt bigint);
-static void bigint_print_decimal(const BigInt bigint);
-#endif
-
-// =========================================================
-//		Barycentric Interpolation
-// =========================================================
-
-/*  Get the barycentric coordinates [u, v] for the projection of point [q] onto the line segment [a, b]. */
-static void barycentric_1d(const int64_t q[3], const int64_t a[3], const int64_t b[3], double* u, double* v);
-
-/* Get the barycentric coordinates [u, v, w] for the projection of point [q] onto the positively oriented triangle [a, b, c]. */
-static void barycentric_2d(const int64_t q[3], const int64_t a[3], const int64_t b[3], const int64_t c[3], double* u, double* v, double* w);
-
-/* Get the barycentric coordinates [u, v, w, x] for point [q] wrt the positively oriented tetrahedron [a, b, c, d]. */
-static void barycentric_3d(const int64_t q[3], const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], double* u, double* v, double* w, double* x);
-
-// =========================================================
-//		Spatial Grid
-// =========================================================
-
-/* Resolution of the spatial grid. */
-enum { SPATIALGRID_N = 16 }; 
-
-typedef struct
-{
-	int grid[SPATIALGRID_N][SPATIALGRID_N][SPATIALGRID_N][4];
-} SpatialGrid;
-
-/* Build the spatial grid. */
-static void spatialgrid_build(TetrapalData* tetrapal);
-
-/* Locate the simplex associated with the grid index for a given point. */
-static void spatialgrid_locate(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, int* d);
-
-// =========================================================
-//		Vertex Graph (Adjacency List)
-// =========================================================
-
-static const size_t GRAPH_LIST_RESERVE = 4;
-
-typedef struct
-{
-	size_t capacity, size;
-	int* data;
-} GraphList;
-
-typedef struct
-{
-	size_t size;
-	GraphList* list;
-} Graph;
-
-static Graph* graph_new(size_t size);
-static void graph_free(Graph* graph);
-
-static void graph_list_insert(GraphList* list, int a);
-// static void graph_list_remove(GraphList* list, int a);
-
-/* Connect [a] and [b] in the graph. */
-static void graph_insert(Graph* graph, int a, int b);
-
-// /* Disconnect [a] and [b] in the graph. */
-// static void graph_remove(Graph* graph, int a, int b);
-
-/* Return the size of a given vertex list. */
-static size_t graph_list_size(const Graph* graph, const size_t vertex);
-
-/* Return a connected vertex at the index in the given list. */
-static int graph_get(const Graph* graph, const size_t vertex, const size_t index);
-
-/* Iterate through the graph and return the number of unique (undirected) edges. */
-static int graph_find_number_of_unique_edges(const Graph* graph);
-
-// ===============================================================
-//	Hash Map 
-// ===============================================================	
-
-	/*
-		An unordered map structure where values are associated with keys via a hash table. This implementation uses separate
-		chaining via contiguous arrays rather than a linked list. Additionally, keys and values are stored a separate
-		contiguous array for fast iteration. The hash table simply holds an index into these arrays for the appropriate
-		element.
-
-		The map is ordered until a removal is called, in which case the element to be removed is swapped out with the element
-		at the back of the array.
-	*/
-
-typedef size_t(*HashMap_Func_Hash)(const void*);
-typedef int(*HashMap_Func_Equal)(const void*, const void*);
-
-typedef struct
-{
-	size_t size, capacity;
-	size_t data;
-} HashMap_Bucket;
-
-typedef struct
-{
-	size_t capacity;
-	HashMap_Bucket** buckets;
-} HashMap_Table;
-
-typedef struct
-{
-	size_t size, capacity;
-	size_t stride_key, stride_value;
-	void* data;
-	HashMap_Table table;
-	HashMap_Func_Hash func_hash;
-	HashMap_Func_Equal func_equal;
-} HashMap;
-
-static const double HASHMAP_LOAD_FACTOR = 0.7;
-static const double HASHMAP_GROWTH_FACTOR = 1.618;
-static const size_t HASHMAP_BUCKET_RESERVE = 2;
-
-static HashMap* hashmap_new(const size_t stride_key, const size_t stride_value, size_t reserve, const HashMap_Func_Hash func_hash, const HashMap_Func_Equal func_equal);
-
-/* Free all data in the map. */
-static void hashmap_free(HashMap* hashmap);
-
-/* Insert an element into the map. */
-static void hashmap_insert(HashMap* hashmap, const void* key, const void* value);
-
-/* Remove an element from the map. Does not maintain the order of elements. */
-static void hashmap_remove(HashMap* hashmap, const void* key);
-
-// /* Check if the element exists in the map. Returns 0 if false, non-zero if true. */
-// static int hashmap_has(const HashMap* hashmap, const void* key);
-
-/* Lookup a value in the map via its key. */
-static void* hashmap_find(const HashMap* hashmap, const void* key);
-
-/* Get the key at the specified index. Elements are not guaranteed to be ordered! */
-static void* hashmap_get_key(const HashMap* hashmap, const size_t index);
-
-/* Get the value at the specified index. Elements are not guaranteed to be ordered! */
-static void* hashmap_get_value(const HashMap* hashmap, const size_t index);
-
-/* Return the number of elements in the map. */
-static size_t hashmap_size(const HashMap* hashmap);
-
-/* Increase the capacity of the hash table, rehashing all elements */
-static void hashmap_table_grow(HashMap* hashmap);
-
-// ===============================================================
-//	Hash Set 
-// ===============================================================	
-
-/*
-	An unordered set data structure that stores elements in a contiguous array. A hash table is used to map values
-	to their position in the array. This data structure supports O(1) insertion and lookup, as well as fast iteration
-	of all elements in the flat array. O(1) removal is also supported, as the structure simply replaces the element
-	to be removed with the last element before decreasing the size. The hash table is updated in a similar manner.
-	Because of this, the elements are only ordered as long as no removals are performed.
-*/
-
-typedef size_t(*HashSet_Func_Hash)(const void*);
-typedef int(*HashSet_Func_Equal)(const void*, const void*);
-
-typedef struct HashSet_Bucket {
-	size_t size, capacity;
-	size_t data;
-} HashSet_Bucket;
-
-typedef struct HashSet_Map {
-	size_t capacity;
-	HashSet_Bucket** buckets;
-} HashSet_Map;
-
-typedef struct HashSet {
-	size_t size, capacity, stride;
-	void* data;
-	HashSet_Map map;
-	HashSet_Func_Hash func_hash;
-	HashSet_Func_Equal func_equal;
-} HashSet;
-
-static const double HASHSET_LOAD_FACTOR = 0.7;
-static const double HASHSET_GROWTH_FACTOR = 1.618;
-static const size_t HASHSET_BUCKET_RESERVE = 2;
-
-/* Allocate memory for a new set. */
-static HashSet* hashset_new(const size_t stride, size_t reserve, const HashSet_Func_Hash func_hash, const HashSet_Func_Equal func_equal);
-
-/* Free all data in the set. */
-static void hashset_free(HashSet* hashset);
-
-/* Insert an element into the set. */
-static void hashset_insert(HashSet* hashset, const void* element);
-
-// /* Remove an element from the set. Does not maintain the order of elements. */
-// static void hashset_remove(HashSet* hashset, const void* element);
-
-// /* Check if the element exists in the set. Returns 0 if false, non-zero if true. */
-// static int hashset_has(const HashSet* hashset, const void* element); 
-
-/* Get the element at the specified index. Elements are not guaranteed to be ordered! */
-static const void* hashset_get(const HashSet* hashset, const size_t index);
-
-/* Return a pointer to the first element in the set. */
-static const void* hashset_begin(const HashSet* hashset);
-
-/* Return a pointer to the last element in the set. */
-// static const void* hashset_end(const HashSet* hashset);
-
-/* Return the number of elements in the set. */
-static size_t hashset_size(const HashSet* hashset);
-
-/* Increase the capacity of the map, rehashing all elements */
-static void hashset_map_grow(HashSet* hashset);
-
-// ===============================================================
-//	Tetrapal Core
-// ===============================================================
-
+/* Error codes. */
 typedef enum
 {
-	VERTEX_INFINITE = -1,
-	VERTEX_NULL = -2,
-	VERTEX_NEXT = -3,
-	VERTEX_PREV = -4
-} TetrapalEnum;
+	ERROR_NONE,
+	ERROR_OUT_OF_MEMORY,
+	ERROR_INVALID_ARGUMENT,
+
+} ErrorCode;
+
+/* Internal hard-coded maximum value of a given coordinate.
+	Input points are expected to be given in the 0.0 to 1.0 range, and are then scaled by this amount.
+	This value has been chosen because it allows for accurate representation of linear sRGB without loss of precision.
+	Additionally, knowing the maximum possible bit length of a coordinate makes exact computation of geometric predicates simpler. */
+static const coord_t TETRAPAL_PRECISION = (1u << 16u) - 1;
+
+/********************************/
+/*		Vector Maths			*/
+/********************************/
+
+/* Calculate the dot product of [a] and [b] in 3D. */
+static inline coord_t dot_3d(const coord_t a[3], const coord_t b[3]);
+
+/* Calculate the dot product of [a] and [b] in 2D. */
+static inline coord_t dot_2d(const coord_t a[2], const coord_t b[2]);
+
+/* Subtract [b] from [a] in 3D. */
+static inline void sub_3d(const coord_t a[3], const coord_t b[3], coord_t result[3]);
+
+/* Subtract [b] from [a] in 2D. */
+static inline void sub_2d(const coord_t a[2], const coord_t b[2], coord_t result[2]);
+
+/* Multiply the 3D vector [a] by the scalar [s]. */
+static inline void mul_3d(const coord_t a[3], const coord_t s, coord_t result[3]);
+
+/* Calculate the 3D cross product of [a] against [b]. */
+static inline void cross_3d(const coord_t a[3], const coord_t b[3], coord_t result[3]);
+
+/* Normalise [a] in 3D. */
+static inline void normalise_3d(const coord_t a[3], coord_t result[3]);
+
+/* Determine the circumcentre of the triangle [a, b, c] in 2D space. */
+static void circumcentre_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2], coord_t* result);
+
+/* Determine the circumcentre of the tetrahedron [a, b, c, d]. */
+static void circumcentre_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3], coord_t* result);
+
+/* Get the midpoint between [a] and [b] in 2D space. */
+static inline void midpoint_2d(const coord_t a[2], const coord_t b[2], coord_t result[2]);
+
+/* Get the midpoint between [a] and [b] in 3D space. */
+static inline void midpoint_3d(const coord_t a[3], const coord_t b[3], coord_t result[3]);
+
+/* Calculate the squared distance between [a] and [b] in 1D space. */
+static inline coord_t distance_squared_1d(const coord_t a[1], const coord_t b[1]);
+
+/* Calculate the squared distance between [a] and [b] in 2D space. */
+static inline coord_t distance_squared_2d(const coord_t a[2], const coord_t b[2]);
+
+/* Calculate the squared distance between [a] and [b] in 3D space. */
+static inline coord_t distance_squared_3d(const coord_t a[3], const coord_t b[3]);
+
+/********************************/
+/*		128-Bit Integer			*/
+/********************************/
+
+/* Simulation of a 128-bit signed integer type for higher precision integer arithmetic. */
 
 typedef struct
 {
-	int64_t x, y, z;
-} TetrapalVertex;
+	digit_t digits[2];
+	char sign;
+
+} int128_t;
+
+/* Create a new zero-initialised int128. */
+static inline int128_t int128_zero();
+
+/* Create a new int128 from the product of two doubles. */
+static inline int128_t int128_from_product(const double a, const double b);
+
+/* Add two int128 types together. */
+static inline int128_t int128_add(const int128_t a, const int128_t b);
+
+/* Subtract two int128 types from each other. */
+static inline int128_t int128_sub(const int128_t a, const int128_t b);
+
+/* Return the absolute (positive) value of [a]. */
+static inline int128_t int128_abs(const int128_t a);
+
+/* Return the negative value of [a]. */
+static inline int128_t int128_neg(const int128_t a);
+
+/* Return the additive inverse of [a] (flip the sign if it is not zero). */
+static inline int128_t int128_inv(const int128_t a);
+
+/* Test whether the absolute value of [a] is less than the absolute value of [b]. */
+static inline bool int128_lt_abs(const int128_t a, const int128_t b);
+
+/********************************/
+/*		Geometric Predicates	*/
+/********************************/
+
+/* 
+	Robust geometric predicates are calculated by taking advantage of the fact that the
+	input coordinates consist of integer values whose maximum representable bit length is 
+	known in advance.
+
+	Because of this, it is possible to predetermine conservative error bounds for each
+	predicate before runtime, assuming arithmetic is performed using double precision floats.
+
+	In most cases the maximum error is 0, and no specialised exact arithmetic is ever needed.
+
+	Otherwise, the error bounds acts as a static filter that only performs exact arithmetic
+	when the magnitude of the approximate result exceeds the maximum error. 
+*/
+
+static const double MAX_ERROR_INCIRCLE = 73728.0;
+static const double MAX_ERROR_INSPHERE = 51539607552.0;
+
+/* Check if the 3D coordinates [a] and [b] are coincident. */
+static inline bool is_coincident_3d(const coord_t a[3], const coord_t b[3]);
+
+/* Check if the 3D coordinates [a], [b] and [c] are colinear. */
+static bool is_colinear_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3]);
+
+/* Check if the 3D coordinates [a], [b], [c] and [d] are coplanar. */
+static inline bool is_coplanar_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3]);
+
+/* Evaluate the signed area of the triangle [a, b, c] in 2D space. */
+static coord_t orient_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2]);
+
+/* Evaluate the signed volume of the tetrahedron [a, b, c, d] in 3D space. */
+static coord_t orient_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3]);
+
+/* Test whether the point [e] lies inside or outside the sphere circumscribing the positively oriented triangle. [a, b, c]. */
+static coord_t incircle_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2], const coord_t d[2]);
+
+/* Test whether the point [d] lies inside or outside the sphere circumscribing the positively oriented tetrahedron. [a, b, c, d]. */
+static coord_t insphere_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3], const coord_t e[3]);
+
+#ifdef TETRAPAL_DEBUG
+/* Return the bit-length of the absolute value of a. */
+static inline size_t bit_length(const coord_t a);
+#endif
+
+/********************************/
+/*		Stack					*/
+/********************************/
 
 typedef struct
 {
-	int a, b, c;
-} TetrapalAdjacencyKey;
+	size_t count;
+	size_t capacity;
+	simplex_t* data;
+} Stack;
 
-struct TetrapalData
+/* Allocate and initialise stack data. */
+static error_t stack_init(Stack* stack, size_t reserve);
+
+/* Free all data allocated by the stack. */
+static void stack_free(Stack* stack);
+
+/* Clear all items from the stack. */
+static void stack_clear(Stack* stack);
+
+/* Insert an item in the stack. Returns non-zero on failure. */
+static error_t stack_insert(Stack* stack, simplex_t t);
+
+/* Check if the stack is at capacity, resizing if necessary. */
+static error_t stack_check_capacity(Stack* stack);
+
+/* Remove the item at the top of the stack. */
+static void stack_pop(Stack* stack);
+
+/* Get the item at the top of the stack. */
+static simplex_t stack_top(const Stack* stack);
+
+/* Check if the stack contains an item. */
+static bool stack_contains(const Stack* stack, simplex_t t);
+
+/* Check whether or not the stack is empty. */
+static bool stack_is_empty(const Stack* stack);
+
+/********************************/
+/*		KD Tree					*/
+/********************************/
+
+/* Perform in-place balancing of a [k]-d tree given a buffer of vertex indices. */
+static error_t kdtree_balance(Tetrapal* tetrapal, const size_t begin, const size_t end, const size_t depth);
+
+/* Perform an approximate nearest-neighbour search for the given coordinate (i.e. return the first leaf node visited).
+	This function returns the index of the node in the tree, NOT the vertex index itself! */
+static size_t kdtree_find_approximate(const Tetrapal* tetrapal, const coord_t* p);
+
+/* Return the vertex index at node [i] in the tree. */
+static inline vertex_t kdtree_get_vertex(const Tetrapal* tetrapal, const size_t i);
+
+/* Partially sort the buffer in the range [begin, end] inclusive so that the middle value is the median. */
+static void kdtree_sort_median(Tetrapal* tetrapal, const size_t begin, const size_t end, const size_t depth);
+
+#ifdef TETRAPAL_DEBUG
+/* Print the KD Tree. */
+static void kdtree_print(const Tetrapal* tetrapal);
+
+/* Recursive helper function for printing the KD Tree. */
+static void kdtree_print_recurse(const Tetrapal* tetrapal, size_t begin, size_t end, size_t depth);
+#endif
+
+/********************************/
+/*		Cavity					*/
+/********************************/
+
+/* Value representing a free element in the cavity hash table. */
+static const facet_t CAVITY_TABLE_FREE = max_of_unsigned(facet_t); 
+
+typedef struct
 {
-	size_t size;
-	size_t dimensions;
-	int last[4];
-	int number_of_segments;
-	int number_of_triangles;
-	int number_of_tetrahedra;
-	int64_t orient_a[3], orient_b[3], orient_c[3];
-	TetrapalVertex* vertices;
-	HashMap* adjacency;
-	Graph* graph;
-	SpatialGrid grid;
+	struct
+	{
+		size_t count; /* Number of facets in the cavity. */
+		size_t capacity; /* Capacity of the facet arrays. */
+		vertex_t* incident_vertex; /* Facet index to incident vertex global index. */
+		simplex_t* adjacent_simplex; /* Facet index to adjacent simplex global index. */
+		local_t* boundary_facet; /* Facet index to adjacent simplex facet local index. */
+
+	} facets;
+
+	struct
+	{
+		size_t capacity; /* Capacity of the hash table. */
+		size_t count; /* Number of elements in the table. */
+		vertex_t* edge;
+		facet_t* facet;
+	} table;
+
+} Cavity;
+
+/* Allocate and initialise cavity data. */
+static error_t cavity_init(Cavity* cavity, size_t reserve);
+
+/* Free all data allocated by the cavity. */
+static void cavity_free(Cavity* cavity);
+
+/* Insert a facet [a, b, c] into the cavity adjacent to a boundary simplex [t] at local facet index [i]. */
+static facet_t cavity_insert(Cavity* cavity, vertex_t a, vertex_t b, vertex_t c, simplex_t t, local_t i);
+
+/* Check if the cavity is at capacity, resizing if necessary. */
+static error_t cavity_check_capacity(Cavity* cavity);
+
+/* Insert the directed edge [a, b] corresponding to facet [f] into the hash table.
+	Returns non-zero on failure. */
+static error_t cavity_insert_edge(Cavity* cavity, vertex_t a, vertex_t b, facet_t f);
+
+/* Check if the cavity hash table is at capacity, resizing if necessary. */
+static error_t cavity_table_check_capacity(Cavity* cavity);
+
+/* Generate a hash given the directed egde [a, b]. */
+static size_t cavity_edge_hash(vertex_t a, vertex_t b);
+
+/* Reset the cavity data. */
+static void cavity_clear(Cavity* cavity);
+
+/* Return the facet keyed on the directed edge [a, b]. */
+static facet_t cavity_find(Cavity* cavity, vertex_t a, vertex_t b);
+
+/* Set [t] to be the simplex adjacent to the cavity facet [f]. */
+static void cavity_set_adjacent_simplex(Cavity* cavity, facet_t f, simplex_t t);
+
+/* Return the vertex incident to the facet [f] at local index [i]. */
+static vertex_t cavity_get_incident_vertex(Cavity* cavity, facet_t f, local_t i);
+
+/* Return the simplex adjacent to the facet [f]. */
+static simplex_t cavity_get_adjacent_simplex(Cavity* cavity, facet_t f);
+
+/* Get the local index of a facet [f] wrt the facet's adjacent boundary simplex. */
+static local_t cavity_get_adjacent_simplex_facet(Cavity* cavity, facet_t f);
+
+#ifdef TETRAPAL_DEBUG
+/* Print all facet data. */
+static void cavity_print_facet_data(Cavity* cavity);
+#endif
+
+/********************************/
+/*		Tetrapal Core			*/
+/********************************/
+
+struct Tetrapal
+{
+	size_t dimensions; /* Number of dimensions spanned by the triangulation. */
+
+	struct
+	{
+		size_t count; /* Number of vertices. */
+		size_t capacity; /* Size of the vertex buffer. */
+		coord_t basis[2][3]; /* 3D Coordinates representing the basis vectors for 2D and 1D embedded triangulations. */
+		coord_t* coordinates; /* Vertex coordinates. */
+		simplex_t* incident_simplex; /* Vertex global index to incident simplex global index. */
+		vertex_t* tree; /* KD Tree of the coordinates in the triangulation. */
+
+	} vertices;
+
+	struct
+	{
+		size_t count; /* Number of simplices. */
+		size_t capacity; /* Size of the simplex arrays. */
+		vertex_t* incident_vertex; /* Simplex global index to incident vertex global index. */
+		simplex_t* adjacent_simplex; /* Simplex global index to adjacent simplex global index.  */
+		simplex_t last; /* The most recently created finite simplex. */
+
+		/* Array of flags for every simplex. */
+		union
+		{
+			flags_t all; /* Convenient union to clear all flags. */
+			struct
+			{
+				flags_t
+					is_free : 1, /* Whether the simplex has been freed/deleted. */
+					is_infinite : 1; /* Whether the simplex is infinite. */
+			} bit;
+		} *flags;
+
+		struct
+		{
+			size_t count; /* Number of deleted simplices. */
+			size_t capacity; /* Size of the deleted simplices array. */
+			simplex_t* simplices; /* Global indices of the deleted simplices. */
+		} deleted;
+
+	} simplices;
+
+	Cavity cavity;
+	Stack stack;
 };
 
-/* Internal precision for input data.
-	Input float values from 0.0 to 1.0 are scaled up by this value and then cast to int64. */
-static const unsigned int TETRAPAL_PRECISION = 16777216;
-static const uint32_t TETRAPAL_RANDOM_MAX = 0xffff;
+/* Log a new vertex in the triangulation. */
+static vertex_t new_vertex(Tetrapal* tetrapal, const coord_t* p);
 
-/* Generate a random integer. */
-static uint32_t random_int(uint32_t* state);
+/* Frees an existing tetrahedron [t]. */
+static error_t free_simplex(Tetrapal* tetrapal, simplex_t t);
 
-/* Generate a random integer from 0 to (max - 1). */
-static uint32_t random_range_int(uint32_t* state, const int32_t range);
+/* Set the adjacent simplex [a] with respect to simplex [t] at local facet index [i]. */
+static inline void set_adjacent_simplex(Tetrapal* tetrapal, simplex_t t, simplex_t a, local_t i);
 
-/* Swap the values of two ints, given their pointers. */
-static void swap_int(int* a, int* b);
+/* Get the vertex incident to simplex [t] at local vertex index [i]. */
+static inline vertex_t get_incident_vertex(const Tetrapal* tetrapal, simplex_t t, local_t i);
 
-/* Clamp a given float within the range spcified by min, max. */
-static void clamp_float(float* value, float min, float max);
+/* Get the simplex adjacent to simplex [t] at local facet index [i]. */
+static inline simplex_t get_adjacent_simplex(const Tetrapal* tetrapal, simplex_t t, local_t i);
 
-/* Given a vertex at index i, get its 3D coordinates.
-If the vertex is infinite or doesn't exist, the function will return {-1, -1, -1}. */
-static void get_coordinates(const TetrapalData* tetrapal, const int i, int64_t coords[3]);
+/* Get a simplex incident to vertex [v]. */
+static inline simplex_t get_incident_simplex(const Tetrapal* tetrapal, vertex_t v);
 
-/* Hash function for the adjacency map. */
-static size_t adjacency_hash(const void* ptr_key);
+/* Get the circumcentre for a given simplex [t]. */
+static inline void get_circumcentre(const Tetrapal* tetrapal, simplex_t t, coord_t* result);
 
-/* Comparison function for adjacency keys. */
-static int adjacency_compare_equal(const void* a, const void* b);
+/* Get a const pointer to the coordinates of vertex [v]. */
+static inline const coord_t* get_coordinates(const Tetrapal* tetrapal, vertex_t v);
 
-/* Hash function for a line segment defined by two indices. */
-static size_t segment_hash(const void* ptr_segment);
+/* Get the normal vector of the facet at [i] of simplex [t]. */
+static void get_facet_normal(const Tetrapal* tetrapal, simplex_t t, local_t i, coord_t result[3]);
 
-/* Comparison function for a non-directed line segment defined by two indices. */
-static int segment_compare_equal(const void* ptr_a, const void* ptr_b);
+/* Get the local vertex index from [t] corresponding to the global vertex index [v]. */
+static inline local_t find_vertex(const Tetrapal* tetrapal, simplex_t t, vertex_t v);
 
-/* Arranges triangle indices to be in canonical order. */
-static void triangle_make_canonical(int* a, int* b, int* c);
+/* Get the local facet index from [t] that is shared by [adj]. */
+static inline local_t find_adjacent(const Tetrapal* tetrapal, simplex_t t, simplex_t adj);
 
-/* Hash function for a triangle defined by three indices. */
-static size_t triangle_hash(const void* ptr_triangle);
+/* Get the local facet index from [t] via the directed edge [a, b]. */
+static inline local_t find_facet_from_edge(const Tetrapal* tetrapal, simplex_t t, vertex_t a, vertex_t b);
 
-/* Comparison function for a triangle defined by three indices. */
-static int triangle_compare_equal(const void* ptr_a, const void* ptr_b);
+/* Check whether or not a given simplex has an infinite vertex. */
+static inline bool is_infinite_simplex(const Tetrapal* tetrapal, simplex_t t);
 
-/* Arranges tetrahedron indices to be in canonical order. */
-static void tetrahedron_make_canonical(int* a, int* b, int* c, int *d);
+/* Check whether or not the simplex [t] has been freed/deleted. */
+static inline bool is_free_simplex(const Tetrapal* tetrapal, simplex_t t);
 
-/* Hash function for a tetrahedron defined by four indices. */
-static size_t tetrahedron_hash(const void* ptr_tetrahedron);
+/* Check whether a given point is coincident with one of the vertices of simplex [t]. */
+static inline bool is_coincident_simplex(const Tetrapal* tetrapal, simplex_t t, const float point[3]);
 
-/* Comparison function for a tetrahedron defined by four indices. */
-static int tetrahedron_compare_equal(const void* ptr_a, const void* ptr_b);
+/* Get the size of a simplex in the triangulation (dimensions + 1). */
+static inline local_t simplex_size(const Tetrapal* tetrapal);
 
-// ===============================================================
-//		Interpolation
-// ===============================================================	
+/* Check whether the simplex buffers need to be resized, reallocating if so.
+	Returns non-zero on failure. */
+static error_t check_simplices_capacity(Tetrapal* tetrapal);
 
-static int interpolate_3d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, int* d, double* u, double* v, double* w, double* x);
+/* Check whether the deleted simplex array needs to be resized, reallocating if so.
+	Returns non-zero on failure. */
+static error_t check_deleted_capacity(Tetrapal* tetrapal);
 
-static int interpolate_2d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, double* u, double* v, double* w);
+/* Find the first d-simplex to start the triangulation with. Returns the number of dimensions spanned by the point set. */
+static size_t find_first_simplex(Tetrapal* tetrapal, const float* points, const int size, vertex_t v[4]);
 
-static int interpolate_1d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, double* u, double* v);
+/* Generate a random integer from 0 to RANDOM_MAX given a seed value. The seed will be progressed. */
+static inline random_t random(random_t* seed);
 
-// ===============================================================
-//		3D Triangulation
-// ===============================================================	
+/* Get a random integer from 0 to (range - 1) inclusive. */
+static inline random_t random_range(random_t* seed, random_t range);
 
-static int triangulate_3d(TetrapalData* tetrapal);
+/* Swap two vertex indices. */
+static inline void swap_vertex(vertex_t* a, vertex_t* b);
 
-static void rotate_tetrahedron(int* a, int* b, int* c, int* d, int rotations);
+/* Swap two local indices. */
+static inline void swap_local(local_t* a, local_t* b);
 
-static void add_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d);
+#ifdef TETRAPAL_DEBUG
+/* Check that simplex [t] encloses or touches the query point. */
+static bool is_enclosing_simplex(Tetrapal* tetrapal, simplex_t t, const float point[3]);
 
-static void delete_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d);
+/* Check combinatorial data for inconsistencies or corruption. */
+static void check_combinatorics(Tetrapal* tetrapal);
 
-static int adjacent_tetrahedron(const TetrapalData* tetrapal, int a, int b, int c);
+/* Print all simplex data. */
+static void print_simplex_data(Tetrapal* tetrapal);
 
-static int check_conflict_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d, int e);
+/* Print all vertex data. */
+static void print_vertex_data(Tetrapal* tetrapal);
 
-static void consider_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int e);
+/* Print the size in memory of all data. */
+static void print_memory(Tetrapal* tetrapal);
+#endif
 
-static int locate_tetrahedron(TetrapalData* tetrapal, int64_t p[3], int* a, int* b, int* c, int* d);
+/********************************/
+/*		3D Triangulation		*/
+/********************************/
 
-static int is_infinite_tetrahedron(int a, int b, int c, int d);
-
-// ===============================================================
-//		2D Triangulation
-// ===============================================================	
-
-static int triangulate_2d(TetrapalData* tetrapal);
-
-static int locate_triangle(TetrapalData* tetrapal, int64_t p[3], int* a, int* b, int* c);
-
-static void consider_triangle(TetrapalData* tetrapal, int a, int b, int e);
-
-static int check_conflict_triangle(TetrapalData* tetrapal, int a, int b, int c, int e);
-
-static void add_triangle(TetrapalData* tetrapal, int a, int b, int c);
-
-static void delete_triangle(TetrapalData* tetrapal, int a, int b, int c);
-
-static int adjacent_triangle(const TetrapalData* tetrapal, int a, int b);
-
-static void rotate_triangle(int* a, int* b, int* c, int rotations);
-
-static int is_infinite_triangle(int a, int b, int c);
-
-// ===============================================================
-//		1D Triangulation
-// ===============================================================	
-
-static int triangulate_1d(TetrapalData* tetrapal);
-
-static int locate_segment(TetrapalData* tetrapal, int64_t p[3], int* a, int* b);
-
-static void add_segment(TetrapalData* tetrapal, int a, int b);
-
-static void delete_segment(TetrapalData* tetrapal, int a, int b);
-
-static int adjacent_segment(const TetrapalData* tetrapal, int a, TetrapalEnum direction);
-
-static int is_infinite_segment(int a, int b);
-
-//*******************************************************************************************************************************
-//		IMPLEMENTATION
-//*******************************************************************************************************************************
-
-// =========================================================
-//		Geometric Predicates
-// =========================================================
-
-static double distance_squared(const int64_t a[3], const int64_t b[3])
+/* Table of local vertex indices such that the facet [i][0], [i][1], [i][2] is opposite [i].
+	[i], [i][0], [i][1], [i][2] always form a positively-oriented tetrahedron. */
+static const local_t facet_opposite_vertex[4][3] =
 {
-	double ab[3] =
+	 {1, 2, 3},
+	 {0, 3, 2},
+	 {3, 0, 1},
+	 {2, 1, 0}
+};
+
+/* Table of local facet indices such that the directed edge [i, j] belongs to the local facet at [i][j].
+	Useful for visiting the ring of tetrahedra around an edge. */
+static const local_t facet_from_edge[4][4] =
+{
+	{  (local_t)(-1),  2,  3,  1 },
+	{  3, (local_t)(-1),  0,  2 },
+	{  1,  3, (local_t)(-1),  0 },
+	{  2,  0,  1, (local_t)(-1) }
+};
+
+/* Initialise the 3D triangulation, creating the first simplex and setting up internal state. */
+static error_t triangulate_3d(Tetrapal* tetrapal, vertex_t v[4], const float* points, const int size);
+
+/* Insert a vertex [v] into the 3D triangulation. */
+static error_t insert_3d(Tetrapal* tetrapal, vertex_t v);
+
+/* Locate the simplex enclosing the input point, or an infinite simplex if it is outside the convex hull.
+	If it fails, returns a null simplex. */
+static simplex_t locate_3d(const Tetrapal* tetrapal, const coord_t point[3]);
+
+/* Determine the conflict zone of a given point via depth-first search from [t], which must enclose the vertex [v].
+	Frees conflicting simplices and retriangulates the cavity.
+	Returns a simplex that was created during triangulation, or a null simplex if it failed. */
+static simplex_t stellate_3d(Tetrapal* tetrapal, vertex_t v, simplex_t t);
+
+/* Check whether a given point is in conflict with the simplex [t]. */
+static bool conflict_3d(const Tetrapal* tetrapal, simplex_t t, const coord_t point[3]);
+
+/* Interpolate an input point as the weighted sum of up to four existing points in the triangulation. */
+static size_t interpolate_3d(const Tetrapal* tetrapal, const coord_t point[3], int indices[4], float weights[4], simplex_t* t);
+
+/* Return the nearest neighbour of an input point. */
+static vertex_t nearest_3d(const Tetrapal* tetrapal, const coord_t point[3]);
+
+/* Scale a given input point in the range [0.0, 1.0] by the value defined by TETRAPAL_PRECISION.
+	Input points beyond the expected range will be clamped before being transformed. */
+static inline void transform_3d(const float in[3], coord_t out[3]);
+
+/* Create a new tetrahedron [a, b, c, d] with positive orientation. Returns the global index of the new tetrahedron. */
+static simplex_t new_tetrahedron(Tetrapal* tetrapal, vertex_t a, vertex_t b, vertex_t c, vertex_t d);
+
+/* Get the next tetrahedron around the oriented edge [a, b] (i.e. the tetrahedron adjacent to the facet [a, b, (c)]. */
+//static simplex_t next_around_edge(Tetrapal* tetrapal, simplex_t t, vertex_t a, vertex_t b);
+
+/********************************/
+/*		2D Triangulation		*/
+/********************************/
+
+/* Table of local edge indices such that the edge [i][0], [i][1] is opposite vertex [i].
+	[i], [i][0], [i][1] always form a positively-oriented triangle. */
+static const local_t edge_opposite_vertex[3][2] =
+{
+	 {1, 2},
+	 {2, 0},
+	 {0, 1},
+};
+
+/* Initialise the 2D triangulation, creating the first simplex and setting up internal state. */
+static error_t triangulate_2d(Tetrapal* tetrapal, vertex_t v[3], const float* points, const int size);
+
+/* Insert a vertex [v] into the 2D triangulation. */
+static error_t insert_2d(Tetrapal* tetrapal, vertex_t v);
+
+/* Locate the simplex enclosing the input point, or an infinite simplex if it is outside the convex hull.
+	If it fails, returns a null simplex. */
+static simplex_t locate_2d(const Tetrapal* tetrapal, const coord_t point[2]);
+
+/* Determine the conflict zone of a given point via depth-first search from [t], which must enclose the vertex [v].
+	Frees conflicting simplices and retriangulates the cavity.
+	Returns a simplex that was created during triangulation, or a null simplex if it failed. */
+static simplex_t stellate_2d(Tetrapal* tetrapal, vertex_t v, simplex_t t);
+
+/* Check whether a given point is in conflict with the simplex [t]. */
+static bool conflict_2d(const Tetrapal* tetrapal, simplex_t t, const coord_t point[2]);
+
+/* Interpolate an input point as the weighted sum of up to three existing points in the triangulation. */
+static size_t interpolate_2d(const Tetrapal* tetrapal, const coord_t point[2], int indices[3], float weights[3], simplex_t* t);
+
+/* Return the nearest neighbour of an input point. */
+static vertex_t nearest_2d(const Tetrapal* tetrapal, const coord_t point[2]);
+
+/* Transform 3D coordinates in the range [0.0, 1.0] to the local 2D coordinate system of the triangulation. */
+static inline void transform_2d(const Tetrapal* tetrapal, const float point[3], coord_t out[2]);
+
+/* Create a new triangle [a, b, c] with positive orientation. Returns the global index of the new triangle. */
+static simplex_t new_triangle(Tetrapal* tetrapal, vertex_t a, vertex_t b, vertex_t c);
+
+/********************************************/
+/*		1D Triangulation (Binary Tree)		*/
+/********************************************/
+
+/* Initialise the 1D triangulation, i.e. build the binary tree. */
+static error_t triangulate_1d(Tetrapal* tetrapal, const float* points, const int size);
+
+/* Transform 3D coordinates in the range [0.0, 1.0] to the local 1D coordinate system of the triangulation. */
+static inline void transform_1d(const Tetrapal* tetrapal, const float point[3], coord_t out[1]);
+
+/* Interpolate an input point as the weighted sum of up to two existing points in the triangulation. */
+static size_t interpolate_1d(const Tetrapal* tetrapal, const coord_t point[1], int indices[2], float weights[2]);
+
+/* Return the nearest neighbour of an input point. */
+static vertex_t nearest_1d(const Tetrapal* tetrapal, const coord_t point[1]);
+
+/********************************************/
+/*		0D Triangulation (Single Vertex)	*/
+/********************************************/
+
+/* Initialise the 0D triangulation. */
+static error_t triangulate_0d(Tetrapal* tetrapal);
+
+/* 'Interpolate' an input point in a 0d triangulation (returns the 0 vertex). */
+static size_t interpolate_0d(int indices[1], float weights[1]);
+
+/* Return the 0 vertex. */
+static vertex_t nearest_0d();
+
+/********************************************/
+/*		Natural Neighbour Interpolation		*/
+/********************************************/
+
+/* Helper function to accumulate the weight for a given vertex index. */
+static inline error_t natural_neighbour_accumulate(vertex_t index, coord_t weight, int* indices, float* weights, int size, size_t* count);
+
+/* Get the natural neighbour coordinats of an input point within a 2D triangulation. */
+static size_t natural_neighbour_2d(const Tetrapal* tetrapal, coord_t point[2], int* indices, float* weights, int size);
+
+/* Get the natural neighbour coordinats of an input point within a 3D triangulation. */
+static size_t natural_neighbour_3d(const Tetrapal* tetrapal, coord_t point[3], int* indices, float* weights, int size);
+
+/********************************************************************************************/
+/********************************************************************************************/
+/*		IMPLEMENTATION																		*/
+/********************************************************************************************/
+/********************************************************************************************/
+
+/********************************/
+/*		Vector Maths			*/
+/********************************/
+
+static inline coord_t dot_3d(const coord_t a[3], const coord_t b[3])
+{
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static inline coord_t dot_2d(const coord_t a[2], const coord_t b[2])
+{
+	return a[0] * b[0] + a[1] * b[1];
+}
+
+static inline void sub_3d(const coord_t a[3], const coord_t b[3], coord_t result[3])
+{
+	result[0] = a[0] - b[0];
+	result[1] = a[1] - b[1];
+	result[2] = a[2] - b[2];
+}
+
+static inline void sub_2d(const coord_t a[2], const coord_t b[2], coord_t result[2])
+{
+	result[0] = a[0] - b[0];
+	result[1] = a[1] - b[1];
+}
+
+static inline void mul_3d(const coord_t a[3], const coord_t s, coord_t result[3])
+{
+	result[0] = a[0] * s;
+	result[1] = a[1] * s;
+	result[2] = a[2] * s;
+}
+
+static inline void cross_3d(const coord_t a[3], const coord_t b[3], coord_t result[3])
+{
+	result[0] = a[1] * b[2] - a[2] * b[1];
+	result[1] = a[2] * b[0] - a[0] * b[2];
+	result[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static inline void normalise_3d(const coord_t a[3], coord_t result[3])
+{
+	coord_t length = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+	result[0] = a[0] / length;
+	result[1] = a[1] / length;
+	result[2] = a[2] / length;
+}
+
+static void circumcentre_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2], coord_t* result)
+{
+	/* Adapted from Shewchuk via https://ics.uci.edu/~eppstein/junkyard/circumcenter.html */
+
+	/* Use coordinates relative to point `a' of the triangle. */
+	double ab[2] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1] };
+	double ac[2] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1] };
+
+	/* Squares of lengths of the edges incident to `a'. */
+	double ab_len = ab[0] * ab[0] + ab[1] * ab[1];
+	double ac_len = ac[0] * ac[0] + ac[1] * ac[1];
+
+	/* Calculate the denominator of the formulae. */
+	double area = ab[0] * ac[1] - ab[1] * ac[0];
+	double denominator = 0.5 / area;
+
+	/* Calculate offset (from `a') of circumcenter. */
+	double offset[2] =
 	{
-		(double)a[0] - (double)b[0],
-		(double)a[1] - (double)b[1],
-		(double)a[2] - (double)b[2]
+		(ac[1] * ab_len - ab[1] * ac_len) * denominator,
+		(ab[0] * ac_len - ac[0] * ab_len) * denominator
 	};
 
+	result[0] = (coord_t)offset[0] + a[0];
+	result[1] = (coord_t)offset[1] + a[1];
+}
+
+static void circumcentre_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3], coord_t* result)
+{
+	/* Adapted from Shewchuk via https://ics.uci.edu/~eppstein/junkyard/circumcenter.html */
+
+	/* Use coordinates relative to point `a' of the tetrahedron. */
+	double ab[3] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1], (double)b[2] - (double)a[2] };
+	double ac[3] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1], (double)c[2] - (double)a[2] };
+	double ad[3] = { (double)d[0] - (double)a[0], (double)d[1] - (double)a[1], (double)d[2] - (double)a[2] };
+
+	/* Squares of lengths of the edges incident to `a'. */
+	double ab_len = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+	double ac_len = ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2];
+	double ad_len = ad[0] * ad[0] + ad[1] * ad[1] + ad[2] * ad[2];
+
+	/* Cross products of these edges. */
+	double acxad[3] = { ac[1] * ad[2] - ac[2] * ad[1], ac[2] * ad[0] - ac[0] * ad[2], ac[0] * ad[1] - ac[1] * ad[0] };
+	double adxab[3] = { ad[1] * ab[2] - ad[2] * ab[1], ad[2] * ab[0] - ad[0] * ab[2], ad[0] * ab[1] - ad[1] * ab[0] };
+	double abxac[3] = { ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0] };
+
+	/* Calculate the denominator of the formulae. */
+	double area = ab[0] * acxad[0] + ab[1] * acxad[1] + ab[2] * acxad[2];
+	double denominator = 0.5 / area;
+
+	/* Calculate offset (from `a') of circumcenter. */
+	double offset[3] =
+	{
+		(ab_len * acxad[0] + ac_len * adxab[0] + ad_len * abxac[0]) * denominator,
+		(ab_len * acxad[1] + ac_len * adxab[1] + ad_len * abxac[1]) * denominator,
+		(ab_len * acxad[2] + ac_len * adxab[2] + ad_len * abxac[2]) * denominator
+	};
+
+	result[0] = (coord_t)offset[0] + a[0];
+	result[1] = (coord_t)offset[1] + a[1];
+	result[2] = (coord_t)offset[2] + a[2];
+}
+
+static inline void midpoint_2d(const coord_t a[2], const coord_t b[2], coord_t result[2])
+{
+	result[0] = (a[0] + b[0]) / 2;
+	result[1] = (a[1] + b[1]) / 2;
+}
+
+static inline void midpoint_3d(const coord_t a[3], const coord_t b[3], coord_t result[3])
+{
+	result[0] = (a[0] + b[0]) / 2;
+	result[1] = (a[1] + b[1]) / 2;
+	result[2] = (a[2] + b[2]) / 2;
+}
+
+static inline coord_t distance_squared_1d(const coord_t a[1], const coord_t b[1])
+{
+	coord_t ab = b[0] - a[0];
+	return ab * ab;
+}
+
+static inline coord_t distance_squared_2d(const coord_t a[2], const coord_t b[2])
+{
+	coord_t ab[2] = { b[0] - a[0], b[1] - a[1] };
+	return ab[0] * ab[0] + ab[1] * ab[1];
+}
+
+static inline coord_t distance_squared_3d(const coord_t a[3], const coord_t b[3])
+{
+	coord_t ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
 	return ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
 }
 
-static int is_coincident(const int64_t a[3], const int64_t b[3])
+/********************************/
+/*		128-Bit Integer			*/
+/********************************/
+
+static inline int128_t int128_zero()
 {
-	return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+	int128_t result;
+	result.digits[0] = result.digits[1] = result.sign = 0;
+	return result;
 }
 
-static double orient1d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3])
+static inline int128_t int128_from_product(const double a, const double b)
 {
-	const double ba[3] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1], (double)b[2] - (double)a[2] };
-	const double ca[3] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1], (double)c[2] - (double)a[2] };
+	int128_t result = int128_zero();
+	digit_t mask = (1uLL << 32) - 1;
+	digit_t tmp[3];
 
-	const double result =
-		ca[0] * ba[0] +
-		ca[1] * ba[1] +
-		ca[2] * ba[2];
+	/* Exit early if any of the operands are zero. */
+	if (a == 0 || b == 0)
+		return result;
+
+	/* Get the sign of the product. */
+	result.sign = (a < 0) == (b < 0) ? 1 : -1;
+
+	/* Get the magnitude of the two doubles and seperate into higher and lower parts. */
+	digit_t a_digit = (digit_t)fabs(a);
+	digit_t b_digit = (digit_t)fabs(b);
+	digit_t a_hi = a_digit >> 32;
+	digit_t a_lo = a_digit & mask;
+	digit_t b_hi = b_digit >> 32;
+	digit_t b_lo = b_digit & mask;
+
+	/* Get products. */
+	result.digits[0] = a_hi * b_hi;
+	result.digits[1] = a_lo * b_lo;
+	tmp[0] = a_hi * b_lo;
+	tmp[1] = a_lo * b_hi;
+
+	/* Add upper products. */
+	result.digits[0] += tmp[0] >> 32;
+	result.digits[0] += tmp[1] >> 32;
+
+	/* Add lower products. */
+	tmp[0] = (tmp[0] & mask) + (tmp[1] & mask);
+	tmp[1] = (tmp[0] & mask) << 32;
+	result.digits[1] += tmp[1];
+	result.digits[0] += tmp[0] >> 32;
+	result.digits[0] += result.digits[1] < tmp[1];
 
 	return result;
 }
 
-static int orient1d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3])
+static inline int128_t int128_add(const int128_t a, const int128_t b)
 {
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
+	/* Test edge cases. */
 
-	const BigInt ba[3] = { bigint_sub(pb[0], pa[0]), bigint_sub(pb[1], pa[1]), bigint_sub(pb[2], pa[2]) };
-	const BigInt ca[3] = { bigint_sub(pc[0], pa[0]), bigint_sub(pc[1], pa[1]), bigint_sub(pc[2], pa[2]) };
+	if (a.sign == 0) /* [a] is zero. */
+		return b;
 
-	const BigInt temp[3] = {
-		bigint_mul(ca[0], ba[0]),
-		bigint_mul(ca[1], ba[1]),
-		bigint_mul(ca[2], ba[2]) };
+	if (b.sign == 0) /* [b] is zero. */
+		return a;
 
-	const BigInt result = bigint_add(bigint_add(temp[0], temp[1]), temp[2]);
+	if (a.sign < b.sign) /* [a] is negative and [b] is positive. */
+		return int128_sub(b, int128_abs(a));
 
-	return result.sign;
-}
+	if (a.sign > b.sign) /* [a] is positive and [b] is negative.*/
+		return int128_sub(a, int128_abs(b));
 
-static int orient1d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3])
-{
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
+	/* Otherwise, add as normal, retaining the sign. */
+	int128_t result = int128_zero();
 
-	const Interval ba[3] = { interval_sub(pb[0], pa[0]), interval_sub(pb[1], pa[1]), interval_sub(pb[2], pa[2]) };
-	const Interval ca[3] = { interval_sub(pc[0], pa[0]), interval_sub(pc[1], pa[1]), interval_sub(pc[2], pa[2]) };
+	result.digits[1] = a.digits[1] + b.digits[1];
+	result.digits[0] = a.digits[0] + b.digits[0];
+	result.digits[0] += result.digits[1] < a.digits[1]; /* Add carry.*/
 
-	const Interval temp[3] = {
-		interval_mul(ca[0], ba[0]),
-		interval_mul(ca[1], ba[1]),
-		interval_mul(ca[2], ba[2]) };
+	TETRAPAL_ASSERT(result.digits[0] >= a.digits[0], "Addition overflow!\n");
 
-	const Interval result = interval_add(interval_add(temp[0], temp[1]), temp[2]);
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return orient1d_exact(a, b, c);
-}
-
-static double orient2d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3])
-{
-	const double ba[3] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1], (double)b[2] - (double)a[2] };
-	const double ca[3] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1], (double)c[2] - (double)a[2] };
-	const double ed[3] = { (double)e[0] - (double)d[0], (double)e[1] - (double)d[1], (double)e[2] - (double)d[2] };
-	const double fd[3] = { (double)f[0] - (double)d[0], (double)f[1] - (double)d[1], (double)f[2] - (double)d[2] };
-
-	const double norm[3] = {
-		ed[1] * fd[2] - ed[2] * fd[1],
-		ed[2] * fd[0] - ed[0] * fd[2],
-		ed[0] * fd[1] - ed[1] * fd[0] };
-
-	const double cross[3] = {
-		ba[1] * ca[2] - ba[2] * ca[1],
-		ba[2] * ca[0] - ba[0] * ca[2],
-		ba[0] * ca[1] - ba[1] * ca[0] };
-
-	const double result =
-		cross[0] * norm[0] +
-		cross[1] * norm[1] +
-		cross[2] * norm[2];
+	result.sign = a.sign;
 
 	return result;
 }
 
-static int orient2d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3])
+static inline int128_t int128_sub(const int128_t a, const int128_t b)
 {
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
-	const BigInt pd[3] = { bigint(d[0]), bigint(d[1]), bigint(d[2]) };
-	const BigInt pe[3] = { bigint(e[0]), bigint(e[1]), bigint(e[2]) };
-	const BigInt pf[3] = { bigint(f[0]), bigint(f[1]), bigint(f[2]) };
+	/* Test edge cases. */
 
-	const BigInt ba[3] = { bigint_sub(pb[0], pa[0]), bigint_sub(pb[1], pa[1]), bigint_sub(pb[2], pa[2]) };
-	const BigInt ca[3] = { bigint_sub(pc[0], pa[0]), bigint_sub(pc[1], pa[1]), bigint_sub(pc[2], pa[2]) };
-	const BigInt ed[3] = { bigint_sub(pe[0], pd[0]), bigint_sub(pe[1], pd[1]), bigint_sub(pe[2], pd[2]) };
-	const BigInt fd[3] = { bigint_sub(pf[0], pd[0]), bigint_sub(pf[1], pd[1]), bigint_sub(pf[2], pd[2]) };
+	if (a.sign == 0) /* [a] is zero.*/
+		return int128_inv(b);
 
-	const BigInt norm[3] = {
-		bigint_sub(bigint_mul(ed[1], fd[2]), bigint_mul(ed[2], fd[1])),
-		bigint_sub(bigint_mul(ed[2], fd[0]), bigint_mul(ed[0], fd[2])),
-		bigint_sub(bigint_mul(ed[0], fd[1]), bigint_mul(ed[1], fd[0])) };
+	if (b.sign == 0) /* [b] is zero.*/
+		return a;
 
-	const BigInt cross[3] = {
-		bigint_sub(bigint_mul(ba[1], ca[2]), bigint_mul(ba[2], ca[1])),
-		bigint_sub(bigint_mul(ba[2], ca[0]), bigint_mul(ba[0], ca[2])),
-		bigint_sub(bigint_mul(ba[0], ca[1]), bigint_mul(ba[1], ca[0])) };
+	if (a.sign < b.sign) /* [a] is negative and [b] is positive. */
+		return int128_neg(int128_add(b, int128_abs(a)));
 
-	const BigInt temp[3] = {
-		bigint_mul(cross[0], norm[0]),
-		bigint_mul(cross[1], norm[1]),
-		bigint_mul(cross[2], norm[2]) };
+	if (a.sign > b.sign) /* [a] is positive and [b] is negative. */
+		return int128_add(a, int128_abs(b));
 
-	const BigInt result = bigint_add(bigint_add(temp[0], temp[1]), temp[2]);
+	if (a.sign < 0 && b.sign < 0) /* [a] and [b] are both negative. */
+		return int128_add(a, int128_abs(b));
 
-	return result.sign;
+	if (a.digits[0] == b.digits[0] && a.digits[1] == b.digits[1]) /* [a] and [b] are equal. */
+		return int128_zero();
+
+	if (int128_lt_abs(a, b) == true) /* [a] is less than [b]. */
+		return int128_neg(int128_sub(b, a));
+
+	/* Subtract. */
+	int128_t result = int128_zero();
+
+	result.digits[1] = a.digits[1] - b.digits[1];
+	result.digits[0] = a.digits[0] - b.digits[0];
+	result.digits[0] -= result.digits[1] > a.digits[1]; /* Subtract borrow.*/
+
+	TETRAPAL_ASSERT(result.digits[0] <= a.digits[0], "Subtraction underflow!\n");
+
+	result.sign = a.sign;
+
+	return result;
 }
 
-static int orient2d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3], const int64_t f[3])
+static inline int128_t int128_abs(const int128_t a)
 {
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
-	const Interval pd[3] = { interval(d[0]), interval(d[1]), interval(d[2]) };
-	const Interval pe[3] = { interval(e[0]), interval(e[1]), interval(e[2]) };
-	const Interval pf[3] = { interval(f[0]), interval(f[1]), interval(f[2]) };
-
-	const Interval ba[3] = { interval_sub(pb[0], pa[0]), interval_sub(pb[1], pa[1]), interval_sub(pb[2], pa[2]) };
-	const Interval ca[3] = { interval_sub(pc[0], pa[0]), interval_sub(pc[1], pa[1]), interval_sub(pc[2], pa[2]) };
-	const Interval ed[3] = { interval_sub(pe[0], pd[0]), interval_sub(pe[1], pd[1]), interval_sub(pe[2], pd[2]) };
-	const Interval fd[3] = { interval_sub(pf[0], pd[0]), interval_sub(pf[1], pd[1]), interval_sub(pf[2], pd[2]) };
-
-	const Interval norm[3] = {
-		interval_sub(interval_mul(ed[1], fd[2]), interval_mul(ed[2], fd[1])),
-		interval_sub(interval_mul(ed[2], fd[0]), interval_mul(ed[0], fd[2])),
-		interval_sub(interval_mul(ed[0], fd[1]), interval_mul(ed[1], fd[0])) };
-
-	const Interval cross[3] = {
-		interval_sub(interval_mul(ba[1], ca[2]), interval_mul(ba[2], ca[1])),
-		interval_sub(interval_mul(ba[2], ca[0]), interval_mul(ba[0], ca[2])),
-		interval_sub(interval_mul(ba[0], ca[1]), interval_mul(ba[1], ca[0])) };
-
-	const Interval temp[3] = {
-		interval_mul(cross[0], norm[0]),
-		interval_mul(cross[1], norm[1]),
-		interval_mul(cross[2], norm[2]) };
-
-	const Interval result = interval_add(interval_add(temp[0], temp[1]), temp[2]);
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return orient2d_exact(a, b, c, d, e, f);
+	int128_t result = a;
+	result.sign = a.sign != 0 ? 1 : 0;
+	return result;
 }
 
-static double orient3d_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
+static inline int128_t int128_neg(const int128_t a)
 {
-	const double ad[3] = { (double)a[0] - (double)d[0], (double)a[1] - (double)d[1], (double)a[2] - (double)d[2] };
-	const double bd[3] = { (double)b[0] - (double)d[0], (double)b[1] - (double)d[1], (double)b[2] - (double)d[2] };
-	const double cd[3] = { (double)c[0] - (double)d[0], (double)c[1] - (double)d[1], (double)c[2] - (double)d[2] };
+	int128_t result = a;
+	result.sign = a.sign != 0 ? -1 : 0;
+	return result;
+}
 
+static inline int128_t int128_inv(const int128_t a)
+{
+	int128_t result = a;
+	result.sign = a.sign < 0 ? 1 : (a.sign > 0 ? -1 : 0);
+	return result;
+}
+
+static inline bool int128_lt_abs(const int128_t a, const int128_t b)
+{
 	return
-		ad[0] * (bd[1] * cd[2] - bd[2] * cd[1]) +
-		bd[0] * (cd[1] * ad[2] - cd[2] * ad[1]) +
-		cd[0] * (ad[1] * bd[2] - ad[2] * bd[1]);
+		a.digits[0] < b.digits[0] ? true :
+		a.digits[0] > b.digits[0] ? false :
+		a.digits[1] < b.digits[1] ? true : false;
 }
 
-static int orient3d_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
+/********************************/
+/*		Geometric Predicates	*/
+/********************************/
+
+static inline bool is_coincident_3d(const coord_t a[3], const coord_t b[3])
 {
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
-	const BigInt pd[3] = { bigint(d[0]), bigint(d[1]), bigint(d[2]) };
-
-	const BigInt ad[3] = { bigint_sub(pa[0], pd[0]), bigint_sub(pa[1], pd[1]), bigint_sub(pa[2], pd[2]) };
-	const BigInt bd[3] = { bigint_sub(pb[0], pd[0]), bigint_sub(pb[1], pd[1]), bigint_sub(pb[2], pd[2]) };
-	const BigInt cd[3] = { bigint_sub(pc[0], pd[0]), bigint_sub(pc[1], pd[1]), bigint_sub(pc[2], pd[2]) };
-
-	const BigInt temp[3] = {
-		bigint_mul(ad[0], bigint_sub(bigint_mul(bd[1], cd[2]), bigint_mul(bd[2], cd[1]))),
-		bigint_mul(bd[0], bigint_sub(bigint_mul(cd[1], ad[2]), bigint_mul(cd[2], ad[1]))),
-		bigint_mul(cd[0], bigint_sub(bigint_mul(ad[1], bd[2]), bigint_mul(ad[2], bd[1]))) };
-
-	const BigInt result = bigint_add(bigint_add(temp[0], temp[1]), temp[2]);
-
-	return result.sign;
+	return (a[0] == b[0] && a[1] == b[1] && a[2] == b[2]) ? true : false;
 }
 
-static int orient3d_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
+static bool is_colinear_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3])
 {
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
-	const Interval pd[3] = { interval(d[0]), interval(d[1]), interval(d[2]) };
+	/* Assuming a maximum bit length of 16 for each coordinate, the result can be computed exactly with doubles. */
 
-	const Interval ad[3] = { interval_sub(pa[0], pd[0]), interval_sub(pa[1], pd[1]), interval_sub(pa[2], pd[2]) };
-	const Interval bd[3] = { interval_sub(pb[0], pd[0]), interval_sub(pb[1], pd[1]), interval_sub(pb[2], pd[2]) };
-	const Interval cd[3] = { interval_sub(pc[0], pd[0]), interval_sub(pc[1], pd[1]), interval_sub(pc[2], pd[2]) };
+	/* Bit length here is still 16, because the minimum value of an input coordinate is always 0. */
+	double ab[3] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1], (double)b[2] - (double)a[2] };
+	double ac[3] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1], (double)c[2] - (double)a[2] };
 
-	const Interval temp[3] = {
-		interval_mul(ad[0], interval_sub(interval_mul(bd[1], cd[2]), interval_mul(bd[2], cd[1]))),
-		interval_mul(bd[0], interval_sub(interval_mul(cd[1], ad[2]), interval_mul(cd[2], ad[1]))),
-		interval_mul(cd[0], interval_sub(interval_mul(ad[1], bd[2]), interval_mul(ad[2], bd[1]))) };
+	/* Bit length of cross product is at most 16 + 16 + 1 = 33. */
+	double cross[3] =
+	{
+		ab[1] * ac[2] - ab[2] * ac[1],
+		ab[2] * ac[0] - ab[0] * ac[2],
+		ab[0] * ac[1] - ab[1] * ac[0]
+	};
 
-	const Interval result = interval_add(interval_add(temp[0], temp[1]), temp[2]);
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return orient3d_exact(a, b, c, d);
-}
-/* 
-static double insegment_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3])
-{
-	const double ac[3] = { (double)a[0] - (double)c[0], (double)a[1] - (double)c[1], (double)a[2] - (double)c[2] };
-	const double bc[3] = { (double)b[0] - (double)c[0], (double)b[1] - (double)c[1], (double)b[2] - (double)c[2] };
-
-	const double result = ac[0] * bc[0] - ac[1] * bc[1] - ac[2] * bc[2];
-
-	return result;
-}
- */
-static int insegment_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3])
-{
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
-
-	const BigInt ac[3] = { bigint_sub(pa[0], pc[0]), bigint_sub(pa[1], pc[1]), bigint_sub(pa[2], pc[2]) };
-	const BigInt bc[3] = { bigint_sub(pb[0], pc[0]), bigint_sub(pb[1], pc[1]), bigint_sub(pb[2], pc[2]) };
-
-	const BigInt temp[3] = {
-		bigint_mul(ac[0], bc[0]),
-		bigint_mul(ac[1], bc[1]),
-		bigint_mul(ac[2], bc[2]) };
-
-	const BigInt result = bigint_sub(bigint_sub(temp[0], temp[1]), temp[2]);
-
-	return result.sign;
+	/* Cross product is guaranteed to be exact, so simply check that all components are zero. */
+	return (cross[0] == 0 && cross[1] == 0 && cross[2] == 0) ? true : false;
 }
 
-static int insegment_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3])
+static inline bool is_coplanar_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3])
 {
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
-
-	const Interval ac[3] = { interval_sub(pa[0], pc[0]), interval_sub(pa[1], pc[1]), interval_sub(pa[2], pc[2]) };
-	const Interval bc[3] = { interval_sub(pb[0], pc[0]), interval_sub(pb[1], pc[1]), interval_sub(pb[2], pc[2]) };
-
-	const Interval temp[3] = {
-		interval_mul(ac[0], bc[0]),
-		interval_mul(ac[1], bc[1]),
-		interval_mul(ac[2], bc[2]) };
-
-	const Interval result = interval_sub(interval_sub(temp[0], temp[1]), temp[2]);
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return insegment_exact(a, b, c);
-}
-/* 
-static double incircle_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
-{
-	const double ad[3] = { (double)a[0] - (double)d[0], (double)a[1] - (double)d[1], (double)a[2] - (double)d[2] };
-	const double bd[3] = { (double)b[0] - (double)d[0], (double)b[1] - (double)d[1], (double)b[2] - (double)d[2] };
-	const double cd[3] = { (double)c[0] - (double)d[0], (double)c[1] - (double)d[1], (double)c[2] - (double)d[2] };
-	const double ba[3] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1], (double)b[2] - (double)a[2] };
-	const double ca[3] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1], (double)c[2] - (double)a[2] };
-
-	const double norm[3] = {
-		ba[1] * ca[2] - ba[2] * ca[1],
-		ba[2] * ca[0] - ba[0] * ca[2],
-		ba[0] * ca[1] - ba[1] * ca[0] };
-
-	const double ad_dot = ad[0] * ad[0] + ad[1] * ad[1] + ad[2] * ad[2];
-	const double bd_dot = bd[0] * bd[0] + bd[1] * bd[1] + bd[2] * bd[2];
-	const double cd_dot = cd[0] * cd[0] + cd[1] * cd[1] + cd[2] * cd[2];
-
-	const double a_lift[3] = { ad[0] + norm[0] * ad_dot, ad[1] + norm[1] * ad_dot, ad[2] + norm[2] * ad_dot };
-	const double b_lift[3] = { bd[0] + norm[0] * bd_dot, bd[1] + norm[1] * bd_dot, bd[2] + norm[2] * bd_dot };
-	const double c_lift[3] = { cd[0] + norm[0] * cd_dot, cd[1] + norm[1] * cd_dot, cd[2] + norm[2] * cd_dot };
-
-	const double result =
-		c_lift[0] * (a_lift[1] * b_lift[2] - a_lift[2] * b_lift[1]) +
-		c_lift[1] * (a_lift[2] * b_lift[0] - a_lift[0] * b_lift[2]) +
-		c_lift[2] * (a_lift[0] * b_lift[1] - a_lift[1] * b_lift[0]);
-
-	return result;
-}
- */
-static int incircle_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
-{
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
-	const BigInt pd[3] = { bigint(d[0]), bigint(d[1]), bigint(d[2]) };
-
-	const BigInt ad[3] = { bigint_sub(pa[0], pd[0]), bigint_sub(pa[1], pd[1]), bigint_sub(pa[2], pd[2]) };
-	const BigInt bd[3] = { bigint_sub(pb[0], pd[0]), bigint_sub(pb[1], pd[1]), bigint_sub(pb[2], pd[2]) };
-	const BigInt cd[3] = { bigint_sub(pc[0], pd[0]), bigint_sub(pc[1], pd[1]), bigint_sub(pc[2], pd[2]) };
-	const BigInt ba[3] = { bigint_sub(pb[0], pa[0]), bigint_sub(pb[1], pa[1]), bigint_sub(pb[2], pa[2]) };
-	const BigInt ca[3] = { bigint_sub(pc[0], pa[0]), bigint_sub(pc[1], pa[1]), bigint_sub(pc[2], pa[2]) };
-
-	const BigInt norm[3] = {
-		bigint_sub(bigint_mul(ba[1], ca[2]), bigint_mul(ba[2], ca[1])),
-		bigint_sub(bigint_mul(ba[2], ca[0]), bigint_mul(ba[0], ca[2])),
-		bigint_sub(bigint_mul(ba[0], ca[1]), bigint_mul(ba[1], ca[0])) };
-
-	const BigInt dot[3] = {
-		bigint_add(bigint_add(bigint_mul(ad[0], ad[0]), bigint_mul(ad[1], ad[1])), bigint_mul(ad[2], ad[2])),
-		bigint_add(bigint_add(bigint_mul(bd[0], bd[0]), bigint_mul(bd[1], bd[1])), bigint_mul(bd[2], bd[2])),
-		bigint_add(bigint_add(bigint_mul(cd[0], cd[0]), bigint_mul(cd[1], cd[1])), bigint_mul(cd[2], cd[2])) };
-
-	const BigInt a_lift[3] = {
-		bigint_add(bigint_mul(dot[0], norm[0]), ad[0]),
-		bigint_add(bigint_mul(dot[0], norm[1]), ad[1]),
-		bigint_add(bigint_mul(dot[0], norm[2]), ad[2]) };
-
-	const BigInt b_lift[3] = {
-		bigint_add(bigint_mul(dot[1], norm[0]), bd[0]),
-		bigint_add(bigint_mul(dot[1], norm[1]), bd[1]),
-		bigint_add(bigint_mul(dot[1], norm[2]), bd[2]) };
-
-	const BigInt c_lift[3] = {
-		bigint_add(bigint_mul(dot[2], norm[0]), cd[0]),
-		bigint_add(bigint_mul(dot[2], norm[1]), cd[1]),
-		bigint_add(bigint_mul(dot[2], norm[2]), cd[2]) };
-
-	const BigInt temp[3] = {
-		bigint_mul(c_lift[0], bigint_sub(bigint_mul(a_lift[1], b_lift[2]), bigint_mul(a_lift[2], b_lift[1]))),
-		bigint_mul(c_lift[1], bigint_sub(bigint_mul(a_lift[2], b_lift[0]), bigint_mul(a_lift[0], b_lift[2]))),
-		bigint_mul(c_lift[2], bigint_sub(bigint_mul(a_lift[0], b_lift[1]), bigint_mul(a_lift[1], b_lift[0]))) };
-
-	const BigInt result = bigint_add(bigint_add(temp[0], temp[1]), temp[2]);
-
-	return result.sign;
+	return (orient_3d(a, b, c, d) == 0) ? true : false;
 }
 
-static int incircle_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3])
+static coord_t orient_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2])
 {
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
-	const Interval pd[3] = { interval(d[0]), interval(d[1]), interval(d[2]) };
+	/* Bit length here is still 16, because the absolute difference between any two 2D coordinates is <= 16 bits. */
+	double ab[2] = { (double)b[0] - (double)a[0], (double)b[1] - (double)a[1] };
+	double ac[2] = { (double)c[0] - (double)a[0], (double)c[1] - (double)a[1] };
 
-	const Interval ad[3] = { interval_sub(pa[0], pd[0]), interval_sub(pa[1], pd[1]), interval_sub(pa[2], pd[2]) };
-	const Interval bd[3] = { interval_sub(pb[0], pd[0]), interval_sub(pb[1], pd[1]), interval_sub(pb[2], pd[2]) };
-	const Interval cd[3] = { interval_sub(pc[0], pd[0]), interval_sub(pc[1], pd[1]), interval_sub(pc[2], pd[2]) };
-	const Interval ba[3] = { interval_sub(pb[0], pa[0]), interval_sub(pb[1], pa[1]), interval_sub(pb[2], pa[2]) };
-	const Interval ca[3] = { interval_sub(pc[0], pa[0]), interval_sub(pc[1], pa[1]), interval_sub(pc[2], pa[2]) };
+	/* Bit length of determinant is at most 16 * 2 + 1 = 33. */
+	double det = ab[0] * ac[1] - ab[1] * ac[0];
 
-	const Interval norm[3] = {
-		interval_sub(interval_mul(ba[1], ca[2]), interval_mul(ba[2], ca[1])),
-		interval_sub(interval_mul(ba[2], ca[0]), interval_mul(ba[0], ca[2])),
-		interval_sub(interval_mul(ba[0], ca[1]), interval_mul(ba[1], ca[0])) };
-
-	const Interval dot[3] = {
-		interval_add(interval_add(interval_mul(ad[0], ad[0]), interval_mul(ad[1], ad[1])), interval_mul(ad[2], ad[2])),
-		interval_add(interval_add(interval_mul(bd[0], bd[0]), interval_mul(bd[1], bd[1])), interval_mul(bd[2], bd[2])),
-		interval_add(interval_add(interval_mul(cd[0], cd[0]), interval_mul(cd[1], cd[1])), interval_mul(cd[2], cd[2])) };
-
-	const Interval a_lift[3] = {
-		interval_add(interval_mul(dot[0], norm[0]), ad[0]),
-		interval_add(interval_mul(dot[0], norm[1]), ad[1]),
-		interval_add(interval_mul(dot[0], norm[2]), ad[2]) };
-
-	const Interval b_lift[3] = {
-		interval_add(interval_mul(dot[1], norm[0]), bd[0]),
-		interval_add(interval_mul(dot[1], norm[1]), bd[1]),
-		interval_add(interval_mul(dot[1], norm[2]), bd[2]) };
-
-	const Interval c_lift[3] = {
-		interval_add(interval_mul(dot[2], norm[0]), cd[0]),
-		interval_add(interval_mul(dot[2], norm[1]), cd[1]),
-		interval_add(interval_mul(dot[2], norm[2]), cd[2]) };
-
-	const Interval temp[3] = {
-		interval_mul(c_lift[0], interval_sub(interval_mul(a_lift[1], b_lift[2]), interval_mul(a_lift[2], b_lift[1]))),
-		interval_mul(c_lift[1], interval_sub(interval_mul(a_lift[2], b_lift[0]), interval_mul(a_lift[0], b_lift[2]))),
-		interval_mul(c_lift[2], interval_sub(interval_mul(a_lift[0], b_lift[1]), interval_mul(a_lift[1], b_lift[0]))) };
-
-	const Interval result = interval_add(interval_add(temp[0], temp[1]), temp[2]);
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return incircle_exact(a, b, c, d);
-}
-/* 
-static double insphere_fast(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3])
-{
-	const double ea[3] = { (double)a[0] - (double)e[0], (double)a[1] - (double)e[1], (double)a[2] - (double)e[2] };
-	const double eb[3] = { (double)b[0] - (double)e[0], (double)b[1] - (double)e[1], (double)b[2] - (double)e[2] };
-	const double ec[3] = { (double)c[0] - (double)e[0], (double)c[1] - (double)e[1], (double)c[2] - (double)e[2] };
-	const double ed[3] = { (double)d[0] - (double)e[0], (double)d[1] - (double)e[1], (double)d[2] - (double)e[2] };
-
-	const double ab = ea[0] * eb[1] - eb[0] * ea[1];
-	const double bc = eb[0] * ec[1] - ec[0] * eb[1];
-	const double cd = ec[0] * ed[1] - ed[0] * ec[1];
-	const double da = ed[0] * ea[1] - ea[0] * ed[1];
-	const double ac = ea[0] * ec[1] - ec[0] * ea[1];
-	const double bd = eb[0] * ed[1] - ed[0] * eb[1];
-
-	const double abc = ea[2] * bc - eb[2] * ac + ec[2] * ab;
-	const double bcd = eb[2] * cd - ec[2] * bd + ed[2] * bc;
-	const double cda = ec[2] * da + ed[2] * ac + ea[2] * cd;
-	const double dab = ed[2] * ab + ea[2] * bd + eb[2] * da;
-
-	const double a_lift = ea[0] * ea[0] + ea[1] * ea[1] + ea[2] * ea[2];
-	const double b_lift = eb[0] * eb[0] + eb[1] * eb[1] + eb[2] * eb[2];
-	const double c_lift = ec[0] * ec[0] + ec[1] * ec[1] + ec[2] * ec[2];
-	const double d_lift = ed[0] * ed[0] + ed[1] * ed[1] + ed[2] * ed[2];
-
-	return (d_lift * abc - c_lift * dab) + (b_lift * cda - a_lift * bcd);
-}
- */
-static int insphere_exact(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3])
-{
-	const BigInt pa[3] = { bigint(a[0]), bigint(a[1]), bigint(a[2]) };
-	const BigInt pb[3] = { bigint(b[0]), bigint(b[1]), bigint(b[2]) };
-	const BigInt pc[3] = { bigint(c[0]), bigint(c[1]), bigint(c[2]) };
-	const BigInt pd[3] = { bigint(d[0]), bigint(d[1]), bigint(d[2]) };
-	const BigInt pe[3] = { bigint(e[0]), bigint(e[1]), bigint(e[2]) };
-
-	const BigInt ae[3] = { bigint_sub(pa[0], pe[0]), bigint_sub(pa[1], pe[1]), bigint_sub(pa[2], pe[2]) };
-	const BigInt be[3] = { bigint_sub(pb[0], pe[0]), bigint_sub(pb[1], pe[1]), bigint_sub(pb[2], pe[2]) };
-	const BigInt ce[3] = { bigint_sub(pc[0], pe[0]), bigint_sub(pc[1], pe[1]), bigint_sub(pc[2], pe[2]) };
-	const BigInt de[3] = { bigint_sub(pd[0], pe[0]), bigint_sub(pd[1], pe[1]), bigint_sub(pd[2], pe[2]) };
-
-	const BigInt ab = bigint_sub(bigint_mul(ae[0], be[1]), bigint_mul(be[0], ae[1]));
-	const BigInt bc = bigint_sub(bigint_mul(be[0], ce[1]), bigint_mul(ce[0], be[1]));
-	const BigInt cd = bigint_sub(bigint_mul(ce[0], de[1]), bigint_mul(de[0], ce[1]));
-	const BigInt da = bigint_sub(bigint_mul(de[0], ae[1]), bigint_mul(ae[0], de[1]));
-	const BigInt ac = bigint_sub(bigint_mul(ae[0], ce[1]), bigint_mul(ce[0], ae[1]));
-	const BigInt bd = bigint_sub(bigint_mul(be[0], de[1]), bigint_mul(de[0], be[1]));
-
-	const BigInt abc = bigint_add(bigint_sub(bigint_mul(ae[2], bc), bigint_mul(be[2], ac)), bigint_mul(ce[2], ab));
-	const BigInt bcd = bigint_add(bigint_sub(bigint_mul(be[2], cd), bigint_mul(ce[2], bd)), bigint_mul(de[2], bc));
-	const BigInt cda = bigint_add(bigint_add(bigint_mul(ce[2], da), bigint_mul(de[2], ac)), bigint_mul(ae[2], cd));
-	const BigInt dab = bigint_add(bigint_add(bigint_mul(de[2], ab), bigint_mul(ae[2], bd)), bigint_mul(be[2], da));
-
-	const BigInt alift = bigint_add(bigint_add(bigint_mul(ae[0], ae[0]), bigint_mul(ae[1], ae[1])), bigint_mul(ae[2], ae[2]));
-	const BigInt blift = bigint_add(bigint_add(bigint_mul(be[0], be[0]), bigint_mul(be[1], be[1])), bigint_mul(be[2], be[2]));
-	const BigInt clift = bigint_add(bigint_add(bigint_mul(ce[0], ce[0]), bigint_mul(ce[1], ce[1])), bigint_mul(ce[2], ce[2]));
-	const BigInt dlift = bigint_add(bigint_add(bigint_mul(de[0], de[0]), bigint_mul(de[1], de[1])), bigint_mul(de[2], de[2]));
-
-	const BigInt result = bigint_add(
-		bigint_sub(bigint_mul(dlift, abc), bigint_mul(clift, dab)),
-		bigint_sub(bigint_mul(blift, cda), bigint_mul(alift, bcd)));
-
-	return result.sign;
+	return (coord_t)det;
 }
 
-static int insphere_filtered(const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], const int64_t e[3])
+static coord_t orient_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3])
 {
-	const Interval pa[3] = { interval(a[0]), interval(a[1]), interval(a[2]) };
-	const Interval pb[3] = { interval(b[0]), interval(b[1]), interval(b[2]) };
-	const Interval pc[3] = { interval(c[0]), interval(c[1]), interval(c[2]) };
-	const Interval pd[3] = { interval(d[0]), interval(d[1]), interval(d[2]) };
-	const Interval pe[3] = { interval(e[0]), interval(e[1]), interval(e[2]) };
+	/* Assuming a maximum bit length of 16 for each coordinate, the result can be computed exactly with doubles. */
 
-	const Interval ae[3] = { interval_sub(pa[0], pe[0]), interval_sub(pa[1], pe[1]), interval_sub(pa[2], pe[2]) };
-	const Interval be[3] = { interval_sub(pb[0], pe[0]), interval_sub(pb[1], pe[1]), interval_sub(pb[2], pe[2]) };
-	const Interval ce[3] = { interval_sub(pc[0], pe[0]), interval_sub(pc[1], pe[1]), interval_sub(pc[2], pe[2]) };
-	const Interval de[3] = { interval_sub(pd[0], pe[0]), interval_sub(pd[1], pe[1]), interval_sub(pd[2], pe[2]) };
+	/* Bit length here is still 16, because the minimum value of an input coordinate is always 0. */
+	double bc[3] = { (double)c[0] - (double)b[0], (double)c[1] - (double)b[1], (double)c[2] - (double)b[2] };
+	double bd[3] = { (double)d[0] - (double)b[0], (double)d[1] - (double)b[1], (double)d[2] - (double)b[2] };
+	double ba[3] = { (double)a[0] - (double)b[0], (double)a[1] - (double)b[1], (double)a[2] - (double)b[2] };
 
-	const Interval ab = interval_sub(interval_mul(ae[0], be[1]), interval_mul(be[0], ae[1]));
-	const Interval bc = interval_sub(interval_mul(be[0], ce[1]), interval_mul(ce[0], be[1]));
-	const Interval cd = interval_sub(interval_mul(ce[0], de[1]), interval_mul(de[0], ce[1]));
-	const Interval da = interval_sub(interval_mul(de[0], ae[1]), interval_mul(ae[0], de[1]));
-	const Interval ac = interval_sub(interval_mul(ae[0], ce[1]), interval_mul(ce[0], ae[1]));
-	const Interval bd = interval_sub(interval_mul(be[0], de[1]), interval_mul(de[0], be[1]));
+	/* Bit length of cross product is at most 16 + 16 + 1 = 33. */
+	double cross[3] =
+	{
+		bc[1] * bd[2] - bc[2] * bd[1],
+		bc[2] * bd[0] - bc[0] * bd[2],
+		bc[0] * bd[1] - bc[1] * bd[0]
+	};
 
-	const Interval abc = interval_add(interval_sub(interval_mul(ae[2], bc), interval_mul(be[2], ac)), interval_mul(ce[2], ab));
-	const Interval bcd = interval_add(interval_sub(interval_mul(be[2], cd), interval_mul(ce[2], bd)), interval_mul(de[2], bc));
-	const Interval cda = interval_add(interval_add(interval_mul(ce[2], da), interval_mul(de[2], ac)), interval_mul(ae[2], cd));
-	const Interval dab = interval_add(interval_add(interval_mul(de[2], ab), interval_mul(ae[2], bd)), interval_mul(be[2], da));
+	/* Bit length of determinant is at most 33 + 16 + 2 = 51. */
+	double det = cross[0] * ba[0] + cross[1] * ba[1] + cross[2] * ba[2];
 
-	const Interval alift = interval_add(interval_add(interval_mul(ae[0], ae[0]), interval_mul(ae[1], ae[1])), interval_mul(ae[2], ae[2]));
-	const Interval blift = interval_add(interval_add(interval_mul(be[0], be[0]), interval_mul(be[1], be[1])), interval_mul(be[2], be[2]));
-	const Interval clift = interval_add(interval_add(interval_mul(ce[0], ce[0]), interval_mul(ce[1], ce[1])), interval_mul(ce[2], ce[2]));
-	const Interval dlift = interval_add(interval_add(interval_mul(de[0], de[0]), interval_mul(de[1], de[1])), interval_mul(de[2], de[2]));
-
-	const Interval result = interval_add(
-		interval_sub(interval_mul(dlift, abc), interval_mul(clift, dab)),
-		interval_sub(interval_mul(blift, cda), interval_mul(alift, bcd)));
-
-	const int sign = interval_sign(result);
-
-	if (sign != 0) return sign;
-	return insphere_exact(a, b, c, d, e);
+	/* 51 <= 53, so no extended precision is required. */
+	return (coord_t)det;
 }
 
-// =========================================================
-//		Interval Arithmetic
-// =========================================================
-
-static inline void interval_swap_bounds(Interval* interval)
+static coord_t incircle_2d(const coord_t a[2], const coord_t b[2], const coord_t c[2], const coord_t d[2])
 {
-	double temp = interval->lower;
-	interval->lower = interval->upper;
-	interval->upper = temp;
+	/* maxbitlen = 16. */
+	double da[2] = { (double)a[0] - (double)d[0], (double)a[1] - (double)d[1] };
+	double db[2] = { (double)b[0] - (double)d[0], (double)b[1] - (double)d[1] };
+	double dc[2] = { (double)c[0] - (double)d[0], (double)c[1] - (double)d[1] };
+
+	/* maxbitlen = 33. */
+	double abdet = da[0] * db[1] - db[0] * da[1];
+	double bcdet = db[0] * dc[1] - dc[0] * db[1];
+	double cadet = dc[0] * da[1] - da[0] * dc[1];
+
+	double alift = da[0] * da[0] + da[1] * da[1];
+	double blift = db[0] * db[0] + db[1] * db[1];
+	double clift = dc[0] * dc[0] + dc[1] * dc[1];
+
+	/* maxbitlen = 68. */
+	double det = alift * bcdet + blift * cadet + clift * abdet;
+
+	/* If the absolute value exceeds the maximum error, we can be sure that the sign is accurate. */
+	if (fabs(det) > MAX_ERROR_INCIRCLE)
+		return (coord_t)det;
+
+	/* Otherwise, we resort to exact arithmetic. */
+	int128_t x = int128_from_product(alift, bcdet);
+	int128_t y = int128_from_product(blift, cadet);
+	int128_t z = int128_from_product(clift, abdet);
+	int128_t det_exact = int128_add(int128_add(x, y), z);
+
+	return (coord_t)det_exact.sign;
 }
 
-static inline double interval_min(const double a, const double b)
+static coord_t insphere_3d(const coord_t a[3], const coord_t b[3], const coord_t c[3], const coord_t d[3], const coord_t e[3])
 {
-	return a < b ? a : b;
-}
+	/* maxbitlen = 16. */
+	double ea[3] = { (double)a[0] - (double)e[0], (double)a[1] - (double)e[1], (double)a[2] - (double)e[2] };
+	double eb[3] = { (double)b[0] - (double)e[0], (double)b[1] - (double)e[1], (double)b[2] - (double)e[2] };
+	double ec[3] = { (double)c[0] - (double)e[0], (double)c[1] - (double)e[1], (double)c[2] - (double)e[2] };
+	double ed[3] = { (double)d[0] - (double)e[0], (double)d[1] - (double)e[1], (double)d[2] - (double)e[2] };
 
-static inline double interval_max(const double a, const double b)
-{
-	return a > b ? a : b;
-}
+	/* maxbitlen = 33. */
+	double ab = ea[0] * eb[1] - eb[0] * ea[1];
+	double bc = eb[0] * ec[1] - ec[0] * eb[1];
+	double cd = ec[0] * ed[1] - ed[0] * ec[1];
+	double da = ed[0] * ea[1] - ea[0] * ed[1];
+	double ac = ea[0] * ec[1] - ec[0] * ea[1];
+	double bd = eb[0] * ed[1] - ed[0] * eb[1];
 
-static inline void interval_add_error(Interval* interval)
-{
-	//if (isnan(interval->lower) || isnan(interval->upper)) 
-	//{
-	//	interval->lower = interval->upper = nan(""); return;
-	//}
+	/* maxbitlen = 51. */
+	double abc = ea[2] * bc - eb[2] * ac + ec[2] * ab;
+	double bcd = eb[2] * cd - ec[2] * bd + ed[2] * bc;
+	double cda = ec[2] * da + ed[2] * ac + ea[2] * cd;
+	double dab = ed[2] * ab + ea[2] * bd + eb[2] * da;
 
-	if (interval->lower > interval->upper)
-		interval_swap_bounds(interval);
+	/* maxbitlen = 34. */
+	double alift = ea[0] * ea[0] + ea[1] * ea[1] + ea[2] * ea[2];
+	double blift = eb[0] * eb[0] + eb[1] * eb[1] + eb[2] * eb[2];
+	double clift = ec[0] * ec[0] + ec[1] * ec[1] + ec[2] * ec[2];
+	double dlift = ed[0] * ed[0] + ed[1] * ed[1] + ed[2] * ed[2];
 
-	if 		(interval->lower < DBL_MIN) interval->lower *= 1.0 + DBL_EPSILON;
-	else if (interval->lower > DBL_MIN) interval->lower *= 1.0 - DBL_EPSILON;
-	else interval->lower -= DBL_MIN * DBL_EPSILON;
+	/* maxbitlen = 87. */
+	double det = (dlift * abc - clift * dab) + (blift * cda - alift * bcd);
 
-	if 		(interval->upper < DBL_MIN) interval->upper *= 1.0 - DBL_EPSILON;
-	else if (interval->upper > DBL_MIN) interval->upper *= 1.0 + DBL_EPSILON;
-	else interval->upper += DBL_MIN * DBL_EPSILON;
-}
+	/* If the absolute value exceeds the maximum error, we can be sure that the sign is accurate. */
+	if (fabs(det) > MAX_ERROR_INSPHERE)
+		return (coord_t)det;
 
-static Interval interval(double value)
-{
-	Interval interval = { value, value };
-	interval_add_error(&interval);
-	return interval;
-}
+	/* Otherwise, we resort to exact arithmetic. */
+	int128_t x = int128_sub(int128_from_product(dlift, abc), int128_from_product(clift, dab));
+	int128_t y = int128_sub(int128_from_product(blift, cda), int128_from_product(alift, bcd));
+	int128_t det_exact = int128_add(x, y);
 
-static Interval interval_add(const Interval lhs, const Interval rhs)
-{
-	Interval result;
-	result.lower = lhs.lower + rhs.lower;
-	result.upper = lhs.upper + rhs.upper;
-	interval_add_error(&result);
-	return result;
-}
-
-static Interval interval_sub(const Interval lhs, const Interval rhs)
-{
-	Interval result;
-	result.lower = lhs.lower - rhs.upper;
-	result.upper = lhs.upper - rhs.lower;
-	interval_add_error(&result);
-	return result;
-}
-
-static Interval interval_mul(const Interval lhs, const Interval rhs)
-{
-	Interval result;
-	double aa = lhs.lower * rhs.lower;
-	double ab = lhs.lower * rhs.upper;
-	double ba = lhs.upper * rhs.lower;
-	double bb = lhs.upper * rhs.upper;
-	result.lower = interval_min(interval_min(aa, ab), interval_min(ba, bb));
-	result.upper = interval_max(interval_max(aa, ab), interval_max(ba, bb));
-	interval_add_error(&result);
-	return result;
-}
-
-static int interval_sign(const Interval interval)
-{
-	if (interval.lower > 0.0 && interval.upper > 0.0) return 1;
-	if (interval.lower < 0.0 && interval.upper < 0.0) return -1;
-	return 0;
+	return (coord_t)det_exact.sign;
 }
 
 #ifdef TETRAPAL_DEBUG
-static void interval_print(const Interval interval)
+static inline size_t bit_length(const coord_t a)
 {
+	size_t bits;
+	size_t var = (size_t)fabs(a);
 
-	printf("INTERVAL: %.17g : %.17g\n", interval.lower, interval.upper);
+	for (bits = 0; var != 0; bits++)
+		var >>= 1;
+
+	return bits;
 }
 #endif
 
+/********************************/
+/*		Stack					*/
+/********************************/
 
-// =========================================================
-//		Extended Precision Integer Arithmetic (BigInt)
-// =========================================================
-
-static BigInt bigint(int64_t number)
+static error_t stack_init(Stack* stack, size_t reserve)
 {
-	BigInt bigint = bigint_zero();
-	if (number == 0) return bigint;
-	bigint.sign = number < 0 ? -1 : 1;
-	bigint.digits[BIGINT_SIZE - 1] = (uint64_t)llabs(number) & 0x00000000ffffffff;
-	bigint.digits[BIGINT_SIZE - 2] = ((uint64_t)llabs(number) & 0xffffffff00000000) >> 32;
-	return bigint;
+	stack->count = 0;
+	stack->capacity = reserve;
+	stack->data = TETRAPAL_MALLOC(sizeof(*stack->data) * reserve);
+
+	if (stack->data == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	return ERROR_NONE;
 }
 
-static BigInt bigint_zero()
+static void stack_free(Stack* stack)
 {
-	return (BigInt) { { 0 }, 0 };
+	TETRAPAL_FREE(stack->data);
+	stack->data = NULL;
 }
 
-static BigInt bigint_abs(const BigInt bigint)
+static void stack_clear(Stack* stack)
 {
-	BigInt absolute = bigint;
-	absolute.sign = absolute.sign != 0 ? 1 : 0;
-	return absolute;
+	stack->count = 0;
 }
 
-static BigInt bigint_neg(const BigInt bigint)
+static error_t stack_insert(Stack* stack, simplex_t t)
 {
-	BigInt negative = bigint;
-	negative.sign = negative.sign != 0 ? -1 : 0;
-	return negative;
+	if (stack_check_capacity(stack) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	stack->data[stack->count] = t;
+	stack->count += 1;
+
+	return ERROR_NONE;
 }
 
-static BigInt bigint_add(const BigInt lhs, const BigInt rhs)
+static error_t stack_check_capacity(Stack* stack)
 {
-	if (rhs.sign == 0) return lhs;
-	if (lhs.sign == 0) return rhs;
-	if (lhs.sign < rhs.sign) return bigint_sub(rhs, bigint_abs(lhs));
-	if (lhs.sign > rhs.sign) return bigint_sub(lhs, bigint_abs(rhs));
+	if (stack->count < stack->capacity)
+		return ERROR_NONE;
 
-	BigInt result = lhs;
-	uint64_t sum, carry = 0;
+	/* Stack is at capacity; resize. */
+	size_t new_capacity = (size_t)(stack->capacity * ARRAY_GROWTH_FACTOR) + 1;
+	void* new_data = TETRAPAL_REALLOC(stack->data, sizeof(*stack->data) * new_capacity);
 
-	for (int i = BIGINT_SIZE - 1; i >= 0; i--)
+	if (new_data == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	stack->capacity = new_capacity;
+	stack->data = new_data;
+
+	return ERROR_NONE;
+}
+
+static void stack_pop(Stack* stack)
+{
+	stack->count -= 1;
+}
+
+static simplex_t stack_top(const Stack* stack)
+{
+	return stack->data[stack->count - 1];
+}
+
+static bool stack_contains(const Stack* stack, simplex_t t)
+{
+	for (size_t i = 0; i < stack->count; i++)
 	{
-		sum = lhs.digits[i] + rhs.digits[i] + carry;
-		carry = (sum & 0xffffffff00000000) >> 32;
-		result.digits[i] = sum & 0x00000000ffffffff;
+		if (stack->data[i] == t)
+			return true;
 	}
 
-	return result;
+	return false;
 }
 
-static BigInt bigint_sub(const BigInt lhs, const BigInt rhs)
+static bool stack_is_empty(const Stack* stack)
 {
-	if (rhs.sign == 0) return lhs;
-	if (lhs.sign < rhs.sign) return bigint_neg(bigint_add(rhs, bigint_abs(lhs)));
-	if (lhs.sign > rhs.sign) return bigint_add(lhs, bigint_abs(rhs));
-	if (lhs.sign < 0 && rhs.sign < 0) return bigint_sub(bigint_abs(rhs), bigint_abs(lhs));
-
-	int comparison = bigint_compare(lhs, rhs);
-	if (comparison < 0) return bigint_neg(bigint_sub(rhs, lhs));
-	if (comparison == 0) return bigint_zero();
-
-	BigInt result = lhs;
-	uint64_t increment = 0, borrow;
-
-	for (int i = BIGINT_SIZE - 1; i >= 0; i--)
-	{
-		borrow = 0;
-		while (lhs.digits[i] + borrow < rhs.digits[i] + increment) borrow += (1uLL << 32);
-		result.digits[i] = (lhs.digits[i] + borrow) - (rhs.digits[i] + increment);
-		increment = borrow >> 32;
-	}
-
-	return result;
+	return (stack->count == 0);
 }
 
-static BigInt bigint_mul(const BigInt lhs, const BigInt rhs)
+/********************************/
+/*		KD Tree					*/
+/********************************/
+
+static error_t kdtree_balance(Tetrapal* tetrapal, const size_t begin, const size_t end, const size_t depth)
 {
-	if (lhs.sign == 0 || rhs.sign == 0) return bigint_zero();
+	/* Building a KD Tree has about O(logN) complexity, so a recursive solution shouldn't be an issue. */
 
-	BigInt addend, result = bigint_zero();
-	uint64_t product, carry;
+	// Partition along current axis and recurse
+	size_t median = (begin + end) / 2;
+	kdtree_sort_median(tetrapal, begin, end, depth);
 
-	for (int i = BIGINT_SIZE - 1; i >= 0; i--)
+	if (median > begin) kdtree_balance(tetrapal, begin, median - 1, (depth + 1) % tetrapal->dimensions);
+	if (median < end) kdtree_balance(tetrapal, median + 1, end, (depth + 1) % tetrapal->dimensions);
+
+	return ERROR_NONE;
+}
+
+static size_t kdtree_find_approximate(const Tetrapal* tetrapal, const coord_t* p)
+{
+	vertex_t* tree = tetrapal->vertices.tree;
+	coord_t* coordinates = tetrapal->vertices.coordinates;
+	size_t k = tetrapal->dimensions;
+
+	size_t begin = 0;
+	size_t end = tetrapal->vertices.count - 1;
+	size_t depth = 0;
+
+	while (true)
 	{
-		addend = (BigInt){ { 0 }, 1 };
-		carry = 0;
-		for (int j = BIGINT_SIZE - 1; j >= 0; j--)
+		size_t median = (begin + end) / 2;
+		coord_t orientation = p[depth] - coordinates[tree[median] * k + depth];
+
+		if (orientation < 0) /* Go left. */
 		{
-			product = lhs.digits[j] * rhs.digits[i] + carry;
-			carry = (product & 0xffffffff00000000) >> 32;
-			addend.digits[j] = product & 0x00000000ffffffff;
+			if (median > begin)
+			{
+				end = median - 1;
+				depth = (depth + 1) % k;
+				continue;
+			}
 		}
-		bigint_shift_l(&addend, BIGINT_SIZE - 1 - i);
-		result = bigint_add(result, addend);
-	}
+		else if (median < end) /* Go right.*/
+		{
+			begin = median + 1;
+			depth = (depth + 1) % k;
+			continue;
+		}
 
-	result.sign = lhs.sign == rhs.sign ? 1 : -1;
-	return result;
+		/* Reached the leaf node; return this node. */
+		return median;
+	}
 }
 
-static void bigint_shift_l(BigInt* bigint, unsigned int shift)
+static inline vertex_t kdtree_get_vertex(const Tetrapal* tetrapal, const size_t i)
 {
-	if (shift == 0)
-		return;
-
-	if (shift > BIGINT_SIZE - 1) {
-		*bigint = bigint_zero();
-		return;
-	}
-
-	memmove(&bigint->digits[0], &bigint->digits[shift], sizeof(uint64_t) * (BIGINT_SIZE - shift));
-	memset(&bigint->digits[BIGINT_SIZE - shift], 0, sizeof(uint64_t) * shift);
+	return tetrapal->vertices.tree[i];
 }
 
-static int bigint_compare(const BigInt lhs, const BigInt rhs)
+static void kdtree_sort_median(Tetrapal* tetrapal, const size_t begin, const size_t end, const size_t depth)
 {
-	if (lhs.sign == -1 && rhs.sign == -1) return bigint_compare(bigint_abs(rhs), bigint_abs(lhs));
-	if (lhs.sign == 0 && rhs.sign == 0) return 0;
-	if (lhs.sign < rhs.sign) return -1;
-	if (lhs.sign > rhs.sign) return 1;
+	vertex_t* tree = tetrapal->vertices.tree;
+	coord_t* coordinates = tetrapal->vertices.coordinates;
+	size_t k = tetrapal->dimensions;
 
-	int64_t difference;
+	// Using Hoare's Partition Scheme
+	size_t lo = begin;
+	size_t hi = end + 1;
+	size_t median = (begin + end) / 2;
 
-	for (int i = 0; i < BIGINT_SIZE; i++)
+	while (true)
 	{
-		difference = lhs.digits[i] - rhs.digits[i];
-		if (difference != 0) return difference < 0 ? -1 * lhs.sign : 1 * lhs.sign;
+		do
+			lo++;
+		while
+			(lo <= end && (coordinates[tree[lo] * k + depth] < coordinates[tree[begin] * k + depth]));
+
+		do
+			hi--;
+		while
+			(coordinates[tree[hi] * k + depth] > coordinates[tree[begin] * k + depth]);
+
+		if (lo >= hi)
+			break;
+		else
+			swap_vertex(&tree[lo], &tree[hi]);
 	}
 
-	return 0;
+	swap_vertex(&tree[begin], &tree[hi]);
+
+	/* Return or recurse. */
+	if (hi == median)
+		return;
+
+	if (hi < median)
+		kdtree_sort_median(tetrapal, hi + 1, end, depth);
+	else
+		kdtree_sort_median(tetrapal, begin, hi - 1, depth);
 }
 
 #ifdef TETRAPAL_DEBUG
-static int bigint_is_zero(const BigInt bigint)
+static void kdtree_print(const Tetrapal* tetrapal)
 {
-	for (int i = BIGINT_SIZE - 1; i >= 0; i--)
-		if (bigint.digits[i] != 0)
-			return 0;
-	return 1;
-}
-#endif
+	printf("** PRINTING KD TREE DATA **\n");
 
-#ifdef TETRAPAL_DEBUG
-static void bigint_print_digits(const BigInt bigint)
-{
-	printf("BIG INT (BASE 2^32): ");
-	if (bigint.sign < 0) printf("-");
-
-	for (int i = 0; i < BIGINT_SIZE; i++) {
-		printf("%llu|", bigint.digits[i]);
-	}
 	printf("\n");
+	kdtree_print_recurse(tetrapal, 0, tetrapal->vertices.count - 1, 0);
+	printf("\n");
+
+	return;
+}
+
+static void kdtree_print_recurse(const Tetrapal* tetrapal, size_t begin, size_t end, size_t depth)
+{
+	size_t stride = tetrapal->dimensions;
+	size_t i = (begin + end) / 2;
+
+	printf("IDX: [%li] COORDS: [ ", tetrapal->vertices.tree[i]);
+
+	for (size_t j = 0; j < stride; j++)
+	{
+		printf("%.3f ", tetrapal->vertices.coordinates[tetrapal->vertices.tree[i] * stride + j]);
+	}
+
+	printf("]\n");
+
+	if (i > begin) /* Go left.*/
+	{
+		for (size_t j = 0; j < depth + 1; j++)
+			printf("  ");
+
+		printf("[LEFT] -> ");
+
+		kdtree_print_recurse(tetrapal, begin, i - 1, depth + 1);
+	}
+
+	if (i < end) /* Go right.*/
+	{
+		for (size_t j = 0; j < depth + 1; j++)
+			printf("  ");
+
+		printf("[RIGHT] -> ");
+
+		kdtree_print_recurse(tetrapal, i + 1, end, depth + 1);
+	}
 }
 #endif
+
+/********************************/
+/*		Cavity					*/
+/********************************/
+
+static error_t cavity_init(Cavity* cavity, size_t reserve)
+{
+	cavity->facets.count = 0;
+	cavity->facets.capacity = reserve;
+
+	cavity->facets.incident_vertex = TETRAPAL_MALLOC(sizeof(*cavity->facets.incident_vertex) * reserve * 3);
+	cavity->facets.adjacent_simplex = TETRAPAL_MALLOC(sizeof(*cavity->facets.adjacent_simplex) * reserve);
+	cavity->facets.boundary_facet = TETRAPAL_MALLOC(sizeof(*cavity->facets.boundary_facet) * reserve);
+
+	size_t table_capacity = reserve * 4;
+
+	cavity->table.capacity = table_capacity;
+	cavity->table.count = 0;
+
+	cavity->table.edge = TETRAPAL_MALLOC(sizeof(*cavity->table.edge) * table_capacity * 2);
+	cavity->table.facet = TETRAPAL_MALLOC(sizeof(*cavity->table.facet) * table_capacity);
+
+	if (cavity->facets.adjacent_simplex == NULL ||
+		cavity->facets.incident_vertex == NULL ||
+		cavity->facets.boundary_facet == NULL ||
+		cavity->table.edge == NULL ||
+		cavity->table.facet == NULL)
+	{
+		cavity_free(cavity);
+		return ERROR_OUT_OF_MEMORY;
+	}
+
+	return ERROR_NONE;
+}
+
+static void cavity_free(Cavity* cavity)
+{
+	TETRAPAL_FREE(cavity->facets.incident_vertex);
+	TETRAPAL_FREE(cavity->facets.adjacent_simplex);
+	TETRAPAL_FREE(cavity->facets.boundary_facet);
+	TETRAPAL_FREE(cavity->table.edge);
+	TETRAPAL_FREE(cavity->table.facet);
+
+	cavity->facets.incident_vertex = NULL;
+	cavity->facets.adjacent_simplex = NULL;
+	cavity->facets.boundary_facet = NULL;
+	cavity->table.edge = NULL;
+	cavity->table.facet = NULL;
+}
+
+static facet_t cavity_insert(Cavity* cavity, vertex_t a, vertex_t b, vertex_t c, simplex_t t, local_t i)
+{
+	error_t error = cavity_check_capacity(cavity);
+
+	if (error)
+		return FACET_NULL;
+
+	const facet_t f = (facet_t)cavity->facets.count;
+
+	/* Create facet relations. */
+	cavity->facets.incident_vertex[f * 3 + 0] = a;
+	cavity->facets.incident_vertex[f * 3 + 1] = b;
+	cavity->facets.incident_vertex[f * 3 + 2] = c;
+	cavity->facets.adjacent_simplex[f] = t;
+	cavity->facets.boundary_facet[f] = i;
+
+	/* Update adjacency table. */
+	error = 0;
+	error += cavity_insert_edge(cavity, a, b, f);
+	error += cavity_insert_edge(cavity, b, c, f);
+	error += cavity_insert_edge(cavity, c, a, f);
+
+	if (error)
+		return FACET_NULL;
+
+	cavity->facets.count += 1;
+	return f;
+}
+
+static error_t cavity_check_capacity(Cavity* cavity)
+{
+	if (cavity->facets.count < cavity->facets.capacity)
+		return ERROR_NONE;
+
+	size_t new_capacity = (size_t)(cavity->facets.capacity * ARRAY_GROWTH_FACTOR) + 1;
+	void* new_incident = TETRAPAL_REALLOC(cavity->facets.incident_vertex, sizeof(*cavity->facets.incident_vertex) * new_capacity * 3);
+	void* new_adjacent = TETRAPAL_REALLOC(cavity->facets.adjacent_simplex, sizeof(*cavity->facets.adjacent_simplex) * new_capacity);
+	void* new_boundary = TETRAPAL_REALLOC(cavity->facets.boundary_facet, sizeof(*cavity->facets.boundary_facet) * new_capacity);
+
+	if (new_incident == NULL ||
+		new_adjacent == NULL ||
+		new_boundary == NULL)
+	{
+		TETRAPAL_FREE(new_incident);
+		TETRAPAL_FREE(new_adjacent);
+		TETRAPAL_FREE(new_boundary);
+		return ERROR_OUT_OF_MEMORY;
+	}
+
+	cavity->facets.capacity = new_capacity;
+	cavity->facets.incident_vertex = new_incident;
+	cavity->facets.adjacent_simplex = new_adjacent;
+	cavity->facets.boundary_facet = new_boundary;
+
+	return ERROR_NONE;
+}
+
+static error_t cavity_insert_edge(Cavity* cavity, vertex_t a, vertex_t b, facet_t f)
+{
+	error_t error = cavity_table_check_capacity(cavity);
+
+	if (error)
+		return error;
+
+	size_t hash = cavity_edge_hash(a, b) % cavity->table.capacity;
+
+	while (cavity->table.facet[hash] != CAVITY_TABLE_FREE)
+	{
+		hash = (hash + 1) % cavity->table.capacity;
+	}
+
+	cavity->table.edge[hash * 2 + 0] = a;
+	cavity->table.edge[hash * 2 + 1] = b;
+	cavity->table.facet[hash] = f;
+	cavity->table.count += 1;
+
+	return ERROR_NONE;
+}
+
+static error_t cavity_table_check_capacity(Cavity* cavity)
+{
+	if ((double)cavity->table.count / (double)cavity->table.capacity < CAVITY_TABLE_MAX_LOAD)
+		return ERROR_NONE;
+
+	/* Stack is at capacity; resize. */
+	size_t old_capacity = cavity->table.capacity;
+	vertex_t* old_edge = cavity->table.edge;
+	facet_t* old_facet = cavity->table.facet;
+
+	size_t new_capacity = (size_t)(cavity->table.capacity * ARRAY_GROWTH_FACTOR) + 1;
+	vertex_t* new_edge = TETRAPAL_MALLOC(sizeof(*cavity->table.edge) * new_capacity * 3);
+	facet_t* new_facet = TETRAPAL_MALLOC(sizeof(*cavity->table.facet) * new_capacity);
+
+	if (new_edge == NULL ||
+		new_facet == NULL)
+	{
+		TETRAPAL_FREE(new_edge);
+		TETRAPAL_FREE(new_facet);
+		return ERROR_OUT_OF_MEMORY;
+	}
+
+	cavity->table.count = 0;
+	cavity->table.capacity = new_capacity;
+	cavity->table.edge = new_edge;
+	cavity->table.facet = new_facet;
+
+	/* Rehash all elements. */
+	for (size_t i = 0; i < cavity->table.capacity; i++)
+		cavity->table.facet[i] = CAVITY_TABLE_FREE;
+
+	for (size_t i = 0; i < old_capacity; i++)
+	{
+		facet_t f = old_facet[i];
+
+		if (f == CAVITY_TABLE_FREE)
+			continue;
+
+		vertex_t a = old_edge[i * 2 + 0];
+		vertex_t b = old_edge[i * 2 + 1];
+
+		cavity_insert_edge(cavity, a, b, f);
+	}
+
+	TETRAPAL_FREE(old_facet);
+	TETRAPAL_FREE(old_edge);
+
+	return ERROR_NONE;
+}
+
+static size_t cavity_edge_hash(vertex_t a, vertex_t b)
+{
+	const size_t x = (size_t)(a);
+	const size_t y = (size_t)(b);
+	return (x * 419) ^ (y * 31);
+}
+
+static void cavity_clear(Cavity* cavity)
+{
+	cavity->facets.count = 0;
+	cavity->table.count = 0;
+
+	/* Set all hash table elements to free. */
+	for (size_t i = 0; i < cavity->table.capacity; i++)
+		cavity->table.facet[i] = CAVITY_TABLE_FREE;
+}
+
+static facet_t cavity_find(Cavity* cavity, vertex_t a, vertex_t b)
+{
+	size_t hash = cavity_edge_hash(a, b) % cavity->table.capacity;
+
+	while (cavity->table.facet[hash] != CAVITY_TABLE_FREE)
+	{
+		const vertex_t v[2] =
+		{
+			cavity->table.edge[hash * 2 + 0],
+			cavity->table.edge[hash * 2 + 1],
+		};
+
+		if (a == v[0] && b == v[1])
+			return cavity->table.facet[hash];
+
+		hash = (hash + 1) % cavity->table.capacity;
+	}
+
+	/* Uh-oh. Something went wrong. */
+	TETRAPAL_ASSERT(0, "Edge could not be found in the adjacency table!");
+	return FACET_NULL;
+}
+
+static void cavity_set_adjacent_simplex(Cavity* cavity, facet_t f, simplex_t t)
+{
+	cavity->facets.adjacent_simplex[f] = t;
+}
+
+static vertex_t cavity_get_incident_vertex(Cavity* cavity, facet_t f, local_t i)
+{
+	return cavity->facets.incident_vertex[f * 3 + i];
+}
+
+static simplex_t cavity_get_adjacent_simplex(Cavity* cavity, facet_t f)
+{
+	return cavity->facets.adjacent_simplex[f];
+}
+
+static local_t cavity_get_adjacent_simplex_facet(Cavity* cavity, facet_t f)
+{
+	return cavity->facets.boundary_facet[f];
+}
 
 #ifdef TETRAPAL_DEBUG
-static void bigint_print_decimal(const BigInt bigint)
+/* Print all facet data. */
+static void cavity_print_facet_data(Cavity* cavity)
 {
-	printf("BIG INT (DECIMAL): ");
-	if (bigint.sign < 0) printf("-");
+	const size_t count = cavity->facets.count;
 
-	if (bigint.sign == 0) {
-		printf("0\n"); return;
-	}
+	printf("** PRINTING FACET DATA **\n");
+	printf("Count: %zu\n", count);
 
-	char remainder, buffer[BIGINT_SIZE * 16] = { 0 };
-	BigInt dividend = bigint;
-	uint64_t quotient, digit = 0;
-
-	while (!bigint_is_zero(dividend))
-		//while (dt_bigint_compare(dividend, bigint_zero()) != 0)
+	for (facet_t f = 0; (size_t)f < count; f++)
 	{
-		quotient = remainder = 0;
-		for (int i = 0; i < BIGINT_SIZE; i++)
-		{
-			quotient = (dividend.digits[i] + remainder * 0x100000000) / 10;
-			remainder = (dividend.digits[i] + remainder * 0x100000000) % 10;
-			dividend.digits[i] = quotient;
-		}
-		buffer[digit++] = remainder + '0';
+		printf("IDX: [%u] V: [%lu, %lu, %lu] T: [%lu] F: [%i]\n",
+			f,
+			cavity_get_incident_vertex(cavity, f, 0),
+			cavity_get_incident_vertex(cavity, f, 1),
+			cavity_get_incident_vertex(cavity, f, 2),
+			cavity_get_adjacent_simplex(cavity, f),
+			cavity_get_adjacent_simplex_facet(cavity, f));
 	}
-	buffer[digit] = '\0';
-
-	// Reverse the buffer
-	int length = strlen(buffer);
-	for (int y = 0; y < length / 2; y++)
-	{
-		char temp = buffer[y];
-		buffer[y] = buffer[length - y - 1];
-		buffer[length - y - 1] = temp;
-	}
-
-	printf("%s\n", buffer);
 }
 #endif
 
-// =========================================================
-//		Barycentric Interpolation
-// =========================================================
+/********************************/
+/*		Tetrapal Core			*/
+/********************************/
 
-static void barycentric_1d(const int64_t q[3], const int64_t a[3], const int64_t b[3], double* u, double* v)
+Tetrapal* tetrapal_new(const float* points, const int size)
 {
-	const double pq[3] = { (double)q[0], (double)q[1], (double)q[2] };
-	const double pa[3] = { (double)a[0], (double)a[1], (double)a[2] };
-	const double pb[3] = { (double)b[0], (double)b[1], (double)b[2] };
-
-	const double ba[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
-	const double qa[3] = { pq[0] - pa[0], pq[1] - pa[1], pq[2] - pa[2] };
-
-	const double total = ba[0] * ba[0] + ba[1] * ba[1] + ba[2] * ba[2];
-
-	*v = (qa[0] * ba[0] + qa[1] * ba[1] + qa[2] * ba[2]) / total;
-	//*v = (*v < 0.0) ? 0.0 : (*v > 1.0 ? 1.0 : *v); // Clamp
-	*u = 1.0 - *v;
-}
-
-static void barycentric_2d(const int64_t q[3], const int64_t a[3], const int64_t b[3], const int64_t c[3], double* u, double* v, double* w)
-{
-	const double pq[3] = { (double)q[0], (double)q[1], (double)q[2] };
-	const double pa[3] = { (double)a[0], (double)a[1], (double)a[2] };
-	const double pb[3] = { (double)b[0], (double)b[1], (double)b[2] };
-	const double pc[3] = { (double)c[0], (double)c[1], (double)c[2] };
-
-	const double ba[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
-	const double ca[3] = { pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2] };
-	const double qa[3] = { pq[0] - pa[0], pq[1] - pa[1], pq[2] - pa[2] };
-
-	const double abc[3] = { ba[1] * ca[2] - ba[2] * ca[1], ba[2] * ca[0] - ba[0] * ca[2], ba[0] * ca[1] - ba[1] * ca[0] };
-	const double abq[3] = { ba[1] * qa[2] - ba[2] * qa[1], ba[2] * qa[0] - ba[0] * qa[2], ba[0] * qa[1] - ba[1] * qa[0] };
-	const double aqc[3] = { qa[1] * ca[2] - qa[2] * ca[1], qa[2] * ca[0] - qa[0] * ca[2], qa[0] * ca[1] - qa[1] * ca[0] };
-
-	const double total = abc[0] * abc[0] + abc[1] * abc[1] + abc[2] * abc[2];
-	const double inverse = 1.0 / total;
-
-	*w = (abq[0] * abc[0] + abq[1] * abc[1] + abq[2] * abc[2]) * inverse;
-	*v = (aqc[0] * abc[0] + aqc[1] * abc[1] + aqc[2] * abc[2]) * inverse;
-	*u = 1.0 - *v - *w;
-}
-
-static void barycentric_3d(const int64_t q[3], const int64_t a[3], const int64_t b[3], const int64_t c[3], const int64_t d[3], double* u, double* v, double* w, double* x)
-{
-	const double pq[3] = { (double)q[0], (double)q[1], (double)q[2] };
-	const double pa[3] = { (double)a[0], (double)a[1], (double)a[2] };
-	const double pb[3] = { (double)b[0], (double)b[1], (double)b[2] };
-	const double pc[3] = { (double)c[0], (double)c[1], (double)c[2] };
-	const double pd[3] = { (double)d[0], (double)d[1], (double)d[2] };
-
-	const double ba[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
-	const double ca[3] = { pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2] };
-	const double da[3] = { pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2] };
-	const double qa[3] = { pq[0] - pa[0], pq[1] - pa[1], pq[2] - pa[2] };
-
-	const double abc[3] = { ba[1] * ca[2] - ba[2] * ca[1], ba[2] * ca[0] - ba[0] * ca[2], ba[0] * ca[1] - ba[1] * ca[0] };
-	const double adb[3] = { da[1] * ba[2] - da[2] * ba[1], da[2] * ba[0] - da[0] * ba[2], da[0] * ba[1] - da[1] * ba[0] };
-	const double acd[3] = { ca[1] * da[2] - ca[2] * da[1], ca[2] * da[0] - ca[0] * da[2], ca[0] * da[1] - ca[1] * da[0] };
-
-	const double total = da[0] * abc[0] + da[1] * abc[1] + da[2] * abc[2];
-	const double inverse = 1.0 / total;
-
-	*x = (qa[0] * abc[0] + qa[1] * abc[1] + qa[2] * abc[2]) * inverse;
-	*w = (qa[0] * adb[0] + qa[1] * adb[1] + qa[2] * adb[2]) * inverse;
-	*v = (qa[0] * acd[0] + qa[1] * acd[1] + qa[2] * acd[2]) * inverse;
-	*u = 1.0 - *v - *w - *x;
-}
-
-// =========================================================
-//		Spatial Grid
-// =========================================================
-
-static void spatialgrid_build(TetrapalData* tetrapal)
-{
-	uint32_t random_state = 1;
-
-	if (tetrapal->dimensions == 3)
-	{
-		int a, b, c, d;
-		int64_t pa[3], pb[3], pc[3], pd[3];
-
-		int last[4] =
-		{
-			tetrapal->last[0],
-			tetrapal->last[1],
-			tetrapal->last[2],
-			tetrapal->last[3],
-		};
-
-		for (int x = 0; x < SPATIALGRID_N; x++)
-			for (int y = 0; y < SPATIALGRID_N; y++)
-				for (int z = 0; z < SPATIALGRID_N; z++)
-				{
-					const int64_t step = TETRAPAL_PRECISION / SPATIALGRID_N;
-					const int64_t p[3] = { x * step, y * step, z * step };
-
-					a = last[0];
-					b = last[1];
-					c = last[2];
-					d = last[3];
-
-					// Start walking from within the triangulation
-					while (1) {
-
-						// If we arrive at an infinite tetrahedron, we must perform a convex hull walk
-						if (is_infinite_tetrahedron(a, b, c, d)) {
-							goto WALK_FACE;
-						}
-
-						// Randomly rotate indices (stochastic walk)
-						rotate_tetrahedron(&a, &b, &c, &d, random_range_int(&random_state, 4));
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-						get_coordinates(tetrapal, c, pc);
-						get_coordinates(tetrapal, d, pd);
-
-						// Test the query point against every face
-						if (orient3d_fast(pa, pb, pc, p) < 0) { d = adjacent_tetrahedron(tetrapal, c, b, a); swap_int(&a, &c); continue; }
-						if (orient3d_fast(pa, pc, pd, p) < 0) { b = adjacent_tetrahedron(tetrapal, d, c, a); swap_int(&b, &d); continue; }
-						if (orient3d_fast(pa, pd, pb, p) < 0) { c = adjacent_tetrahedron(tetrapal, b, d, a); swap_int(&c, &d); continue; }
-						if (orient3d_fast(pb, pd, pc, p) < 0) { a = adjacent_tetrahedron(tetrapal, c, d, b); swap_int(&a, &d); continue; }
-
-						// If none of the faces return negative, then we have found the enclosing tetrahedron
-						goto WALK_END_3D;
-					}
-
-				WALK_FACE:
-					while (1)
-					{
-						// Randomly rotate indices (stochastic walk)
-						rotate_triangle(&a, &b, &c, random_range_int(&random_state, 3));
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-						get_coordinates(tetrapal, c, pc);
-
-						// Check if the point lies in an incident edge region
-						if (orient2d_fast(pa, pb, p, pa, pb, pc) < 0) { goto WALK_EDGE; }
-						if (orient2d_fast(pb, pc, p, pb, pc, pa) < 0) { a = b; b = c; goto WALK_EDGE; }
-						if (orient2d_fast(pc, pa, p, pc, pa, pb) < 0) { b = a; a = c; goto WALK_EDGE; }
-
-						// Get the tetrahedron
-						d = adjacent_tetrahedron(tetrapal, c, b, a);
-						swap_int(&a, &c);
-
-						goto WALK_END_3D;
-					}
-
-				WALK_EDGE:
-					while (1)
-					{
-						int j, k;
-						j = adjacent_tetrahedron(tetrapal, a, b, VERTEX_INFINITE);
-						k = adjacent_tetrahedron(tetrapal, b, a, VERTEX_INFINITE);
-
-						int64_t pa[3], pb[3], pj[3], pk[3];
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-						get_coordinates(tetrapal, j, pj);
-						get_coordinates(tetrapal, k, pk);
-
-						// Check if point lies in an incident vertex region
-						if (orient1d_fast(pa, pb, p) < 0) { goto WALK_VERTEX; }
-						if (orient1d_fast(pb, pa, p) < 0) { a = b; goto WALK_VERTEX; }
-
-						// Check if point lies in an incident face region
-						if (orient2d_fast(pa, pb, p, pb, pa, pj) < 0) { swap_int(&a, &b); c = j; goto WALK_FACE; }
-						if (orient2d_fast(pb, pa, p, pa, pb, pk) < 0) { c = k; goto WALK_FACE; }
-
-						// Get the tetrahedron
-						c = adjacent_tetrahedron(tetrapal, a, b, VERTEX_INFINITE);
-						d = adjacent_tetrahedron(tetrapal, a, b, c);
-
-						goto WALK_END_3D;
-					}
-
-				WALK_VERTEX:
-					while (1)
-					{
-						// Get all the hull edges connected to this vertex and check if the orthogonal projection of [p] lies on any of these edges
-						for (size_t i = 0; i < graph_list_size(tetrapal->graph, a); i++) {
-
-							b = graph_get(tetrapal->graph, a, i);
-
-							// Only check vertices that lie on the convex hull
-							if (adjacent_tetrahedron(tetrapal, a, b, VERTEX_INFINITE) == VERTEX_NULL)
-								continue;
-
-							int64_t pa[3], pb[3];
-							get_coordinates(tetrapal, a, pa);
-							get_coordinates(tetrapal, b, pb);
-
-							// Check if point lies in an incident edge region
-							if (orient1d_fast(pa, pb, p) > 0) { goto WALK_EDGE; }
-						}
-
-						// Get the tetrahedron
-						for (size_t i = 0; i < graph_list_size(tetrapal->graph, a); i++)
-						{
-							b = graph_get(tetrapal->graph, a, i);
-							c = adjacent_tetrahedron(tetrapal, a, b, VERTEX_INFINITE);
-							if (c == VERTEX_NULL) continue;
-							break;
-						}
-
-						d = adjacent_tetrahedron(tetrapal, a, b, c);
-						goto WALK_END_3D;
-					}
-
-				WALK_END_3D:
-
-					last[0] = tetrapal->grid.grid[x][y][z][0] = a;
-					last[1] = tetrapal->grid.grid[x][y][z][1] = b;
-					last[2] = tetrapal->grid.grid[x][y][z][2] = c;
-					last[3] = tetrapal->grid.grid[x][y][z][3] = d;
-				}
-	}
-	else if (tetrapal->dimensions == 2)
-	{
-		int a, b, c;
-		int64_t pa[3], pb[3], pc[3];
-
-		int last[3] =
-		{
-			tetrapal->last[0],
-			tetrapal->last[1],
-			tetrapal->last[2],
-		};
-
-		get_coordinates(tetrapal, last[0], pa);
-		get_coordinates(tetrapal, last[1], pb);
-		get_coordinates(tetrapal, last[2], pc);
-
-		for (int x = 0; x < SPATIALGRID_N; x++)
-			for (int y = 0; y < SPATIALGRID_N; y++)
-				for (int z = 0; z < SPATIALGRID_N; z++)
-				{
-					const int64_t step = TETRAPAL_PRECISION / SPATIALGRID_N;
-					const int64_t p[3] = { x * step, y * step, z * step };
-
-					a = last[0];
-					b = last[1];
-					c = last[2];
-
-					// Walk as normal, but use the fast predicates (numerical stability is not that important)
-					while (1)
-					{
-						// If we arrive at an infinite triangle, then our point lies outside the current triangulation
-						if (is_infinite_triangle(a, b, c))
-						{
-							break;
-						}
-
-						// Randomly rotate indices (stochastic walk)
-						rotate_triangle(&a, &b, &c, random_range_int(&random_state, 3));
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-						get_coordinates(tetrapal, c, pc);
-
-						// Test the query point against every face
-						if (orient2d_fast(pa, pb, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { c = adjacent_triangle(tetrapal, b, a); swap_int(&a, &b); continue; }
-						if (orient2d_fast(pb, pc, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { a = adjacent_triangle(tetrapal, c, b); swap_int(&c, &a); continue; }
-						if (orient2d_fast(pc, pa, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { b = adjacent_triangle(tetrapal, a, c); swap_int(&c, &b); continue; }
-
-						// If none of the faces return negative, then we have found the enclosing triangle
-						goto WALK_END_2D;
-					}
-
-					// Walk the hull
-					while (1)
-					{
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-
-						int adjacent[2] = {
-							adjacent_triangle(tetrapal, a, VERTEX_INFINITE),
-							adjacent_triangle(tetrapal, VERTEX_INFINITE, b) };
-
-						int64_t pj[3], pk[3];
-						get_coordinates(tetrapal, adjacent[0], pj);
-						get_coordinates(tetrapal, adjacent[1], pk);
-
-						if ((orient2d_fast(pj, pa, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) > 0) && (orient1d_fast(pa, pj, p) > 0)) { b = adjacent[0]; swap_int(&a, &b); continue; }
-						if ((orient2d_fast(pb, pk, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) > 0) && (orient1d_fast(pb, pk, p) > 0)) { a = adjacent[1]; swap_int(&a, &b); continue; }
-
-						// This point is closest to this edge, so get the full triangle
-						c = adjacent_triangle(tetrapal, b, a);
-						swap_int(&a, &b);
-
-						goto WALK_END_2D;
-					}
-
-				WALK_END_2D:
-
-					last[0] = tetrapal->grid.grid[x][y][z][0] = a;
-					last[1] = tetrapal->grid.grid[x][y][z][1] = b;
-					last[2] = tetrapal->grid.grid[x][y][z][2] = c;
-					tetrapal->grid.grid[x][y][z][3] = VERTEX_NULL;
-				}
-	}
-	else if (tetrapal->dimensions == 1)
-	{
-		int a, b;
-		int64_t pa[3], pb[3];
-
-		int last[2] =
-		{
-			tetrapal->last[0],
-			tetrapal->last[1],
-		};
-
-		for (int x = 0; x < SPATIALGRID_N; x++)
-			for (int y = 0; y < SPATIALGRID_N; y++)
-				for (int z = 0; z < SPATIALGRID_N; z++)
-				{
-					const int64_t step = TETRAPAL_PRECISION / SPATIALGRID_N;
-					const int64_t p[3] = { x * step, y * step, z * step };
-
-					a = last[0];
-					b = last[1];
-
-					while (1)
-					{
-						// If we arrive at an infinite segment, then our point lies beyond the boundary vertex
-						if (is_infinite_segment(a, b))
-						{
-							// Get the finite edge connected to the finite vertex
-							if (a == VERTEX_INFINITE)
-							{
-								a = adjacent_segment(tetrapal, b, VERTEX_NEXT);
-							}
-							else
-							{
-								b = adjacent_segment(tetrapal, a, VERTEX_PREV);
-							}
-
-							break;
-						}
-
-						get_coordinates(tetrapal, a, pa);
-						get_coordinates(tetrapal, b, pb);
-
-						// Test the query point against both sides of the line
-						if (orient1d_fast(pa, pb, p) < 0) { b = adjacent_segment(tetrapal, a, VERTEX_PREV); swap_int(&a, &b); continue; }
-						if (orient1d_fast(pb, pa, p) < 0) { a = adjacent_segment(tetrapal, b, VERTEX_NEXT); swap_int(&a, &b); continue; }
-
-						// If none of the faces return negative, then we have found the enclosing segment
-						break;
-					}
-
-					// End of the walk
-					last[0] = tetrapal->grid.grid[x][y][z][0] = a;
-					last[1] = tetrapal->grid.grid[x][y][z][1] = b;
-					tetrapal->grid.grid[x][y][z][2] = VERTEX_NULL;
-					tetrapal->grid.grid[x][y][z][3] = VERTEX_NULL;
-				}
-	}
-}
-
-static void spatialgrid_locate(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, int* d)
-{
-	const int64_t step = TETRAPAL_PRECISION / (SPATIALGRID_N - 1);
-	const int64_t x = p[0] / step;
-	const int64_t y = p[1] / step;
-	const int64_t z = p[2] / step;
-	*a = tetrapal->grid.grid[x][y][z][0];
-	*b = tetrapal->grid.grid[x][y][z][1];
-	*c = tetrapal->grid.grid[x][y][z][2];
-	*d = tetrapal->grid.grid[x][y][z][3];
-}
-
-// ===============================================================
-//	Vertex Graph
-// ===============================================================
-
-static Graph* graph_new(size_t size)
-{
-	Graph* graph = TETRAPAL_MALLOC(sizeof(*graph));
-
-	if (graph == NULL) 
-	{ 
-		perror("GRAPH: MALLOC FAILED"); 
-		return NULL;
-	}
-
-	graph->list = TETRAPAL_MALLOC(sizeof(*graph->list) * size);
-
-	if (graph->list == NULL) 
-	{ 
-		perror("GRAPH: MALLOC FAILED"); 
-		TETRAPAL_FREE(graph);
-		return NULL;
-	}
-
-	graph->size = size;
-
-	for (size_t i = 0; i < graph->size; i++) {
-
-		graph->list[i].data = TETRAPAL_MALLOC(sizeof(*(graph->list->data)) * GRAPH_LIST_RESERVE);
-
-		if ((graph->list[i].data) == NULL) 
-		{ 
-			perror("GRAPH: MALLOC FAILED"); 
-			graph_free(graph);
-			return NULL;
-		}
-
-		graph->list[i].capacity = GRAPH_LIST_RESERVE;
-		graph->list[i].size = 0;
-	}
-
-	return graph;
-}
-
-static void graph_free(Graph* graph)
-{
-	if (graph == NULL) return;
-
-	for (size_t i = 0; i < graph->size; i++)
-	{
-		if (graph->list[i].data != NULL)
-			TETRAPAL_FREE(graph->list[i].data);
-	}
-
-	if (graph->list != NULL)
-		TETRAPAL_FREE(graph->list);
-
-	TETRAPAL_FREE(graph);
-}
-
-static void graph_list_insert(GraphList* list, int a)
-{
-	// Resize array if we reach capacity
-	if (list->size == list->capacity) {
-
-		list->capacity *= 2;
-
-		int* temp = list->data;
-		list->data = TETRAPAL_REALLOC(list->data, sizeof(*list->data) * list->capacity);
-
-		if (list->data == NULL) 
-		{ 
-			perror("GRAPH: REALLOC FAILED"); 
-			list->data = temp;
-			return;
-		}
-	}
-
-	list->data[list->size++] = a;
-}
-/* 
-static void graph_list_remove(GraphList* list, int a)
-{
-	for (size_t i = 0; i < list->size; i++) if (list->data[i] == a)
-	{
-		list->data[i] = list->data[--list->size]; return;
-	}
-}
- */
-static void graph_insert(Graph* graph, int a, int b)
-{
-	// Validity check
-	if ((size_t)a >= graph->size || (size_t)b >= graph->size || a < 0 || b < 0)
-		return;
-
-	// Ensure the vertices are not already linked
-	for (size_t i = 0; i < graph->list[a].size; i++)
-		if (graph->list[a].data[i] == b) return;
-
-	graph_list_insert(&graph->list[a], b);
-	graph_list_insert(&graph->list[b], a);
-}
-/* 
-static void graph_remove(Graph* graph, int a, int b)
-{
-	// Validity check
-	if ((size_t)a >= graph->size || (size_t)b >= graph->size || a < 0 || b < 0)
-		return;
-
-	graph_list_remove(&graph->list[a], b);
-	graph_list_remove(&graph->list[b], a);
-}
- */
-static size_t graph_list_size(const Graph* graph, const size_t vertex)
-{
-	return graph->list[vertex].size;
-}
-
-static int graph_get(const Graph* graph, const size_t vertex, const size_t index)
-{
-	return graph->list[vertex].data[index];
-}
-
-static int graph_find_number_of_unique_edges(const Graph* graph)
-{
-	int count = 0;
-
-	for (size_t i = 0; i < graph->size; i++)
-	{
-		count += graph->list[i].size;
-	}
-
-	// Each segment is recorded twice
-	return count / 2;
-}
-
-// ===============================================================
-//	Hash Map 
-// ===============================================================	
-
-static HashMap* hashmap_new(const size_t stride_key, const size_t stride_value, size_t reserve, const HashMap_Func_Hash func_hash, const HashMap_Func_Equal func_equal)
-{
-	HashMap* hashmap = TETRAPAL_MALLOC(sizeof(*hashmap));
-
-	if (hashmap == NULL) 
+	/* No points given. */
+	if (size < 1)
 		return NULL;
 
-	if (reserve < 1) reserve = 1;
-
-	hashmap->capacity = reserve;
-	hashmap->stride_key = stride_key;
-	hashmap->stride_value = stride_value;
-	hashmap->size = 0;
-	hashmap->func_hash = func_hash;
-	hashmap->func_equal = func_equal;
-	hashmap->table.capacity = (size_t)(reserve * HASHMAP_GROWTH_FACTOR) + 1;
-
-	hashmap->data = TETRAPAL_MALLOC((stride_key + stride_value) * hashmap->capacity);
-
-	if (!hashmap->data) 
-	{ 
-		TETRAPAL_FREE(hashmap);
-		return NULL;
-	}
-
-	hashmap->table.buckets = TETRAPAL_MALLOC(sizeof(*hashmap->table.buckets) * hashmap->table.capacity);
-	
-	if (!hashmap->table.buckets) 
-	{ 
-		TETRAPAL_FREE(hashmap->data);
-		TETRAPAL_FREE(hashmap);
-		return NULL;
-	}
-
-	// Allocate buckets
-	for (size_t i = 0; i < hashmap->table.capacity; i++) 
-	{
-		HashMap_Bucket* bucket = TETRAPAL_MALLOC(sizeof(*bucket) + sizeof(bucket->data) * HASHMAP_BUCKET_RESERVE);
-
-		if (bucket == NULL) 
-		{ 
-			perror("HASHMAP: MALLOC FAILED"); 
-			hashmap_free(hashmap);
-			return NULL;
-		}
-
-		bucket->capacity = HASHMAP_BUCKET_RESERVE;
-		bucket->size = 0;
-		hashmap->table.buckets[i] = bucket;
-	}
-
-	return hashmap;
-}
-
-static void hashmap_free(HashMap* hashmap)
-{
-	if (!hashmap) return;
-	
-	for (size_t i = 0; i < hashmap->table.capacity; i++)
-	{
-		if (hashmap->table.buckets[i] != NULL)
-			TETRAPAL_FREE(hashmap->table.buckets[i]);
-	}
-
-	if (hashmap->table.buckets != NULL)
-		TETRAPAL_FREE(hashmap->table.buckets);
-	
-	if (hashmap->data != NULL)
-		TETRAPAL_FREE(hashmap->data);
-
-	TETRAPAL_FREE(hashmap);
-}
-
-static void hashmap_insert(HashMap* hashmap, const void* key, const void* value)
-{
-	// Grow and rehash the map if we hit the load factor
-	if (hashmap->size / (double)hashmap->table.capacity > HASHMAP_LOAD_FACTOR)
-		hashmap_table_grow(hashmap);
-
-	const size_t hash = hashmap->func_hash(key);
-	const size_t index = hash % hashmap->table.capacity;
-	HashMap_Bucket* bucket = hashmap->table.buckets[index];
-
-	// Iterate through the bucket until we get to the end, ensuring the element doesn't already exist.
-	for (size_t i = 0; i < bucket->size; i++) 
-	{
-		const size_t elem_index = (&bucket->data)[i];
-		const void* current_key = hashmap_get_key(hashmap, elem_index);
-
-		if (hashmap->func_equal(key, current_key))
-			return;
-	}
-
-	// Realloc element arrays if it is at capacity
-	if (hashmap->size == hashmap->capacity) 
-	{
-		hashmap->capacity = (size_t)(hashmap->capacity * HASHMAP_GROWTH_FACTOR) + 1;
-
-		void* temp = hashmap->data;
-		hashmap->data = TETRAPAL_REALLOC(hashmap->data, (hashmap->stride_key + hashmap->stride_value) * hashmap->capacity);
-		
-		// If we're out of memory, do nothing
-		if (hashmap->data == NULL) 
-		{ 
-			perror("HASHMAP: REALLOC FAILED"); 
-			hashmap->data = temp; // Restore pointer to old data
-			return; 
-		}
-	}
-
-	// Realloc the bucket if it is at capacity
-	if (bucket->size == bucket->capacity) 
-	{
-		bucket->capacity = (size_t)(bucket->capacity * HASHMAP_GROWTH_FACTOR) + 1;
-		void* temp = bucket;
-		bucket = TETRAPAL_REALLOC(bucket, sizeof(*bucket) + sizeof(bucket->data) * bucket->capacity);
-
-		// If we're out of memory, do nothing
-		if (bucket == NULL) 
-		{ 
-			perror("HASHMAP: REALLOC FAILED"); 
-			bucket = temp; // Restore pointer to old data
-			return;  
-		}
-
-		hashmap->table.buckets[index] = bucket; // Prevent dangling pointer!
-	}
-
-	// Add the element to the element arrays
-	memcpy(((char*)hashmap->data) + (hashmap->stride_key + hashmap->stride_value) * hashmap->size, key, hashmap->stride_key);
-	memcpy(((char*)hashmap->data) + (hashmap->stride_key + hashmap->stride_value) * hashmap->size + hashmap->stride_key, value, hashmap->stride_value);
-	hashmap->size++;
-
-	// Add index to the bucket
-	(&bucket->data)[bucket->size] = hashmap->size - 1;
-	bucket->size++;
-}
-
-static void hashmap_remove(HashMap* hashmap, const void* key)
-{
-	size_t hash = hashmap->func_hash(key);
-	size_t index = hash % hashmap->table.capacity;
-	HashMap_Bucket* bucket = hashmap->table.buckets[index];
-
-	// Iterate through the bucket until we find the element, if it exists
-	for (size_t i = 0; i < bucket->size; i++) {
-
-		const size_t elem_index = (&bucket->data)[i];
-		void* current_key = hashmap_get_key(hashmap, elem_index);
-
-		if (hashmap->func_equal(key, current_key)) { // Element was found
-
-			// Replace the elements with the last and decrease size
-			if (elem_index != hashmap->size - 1)
-				memcpy(current_key, hashmap_get_key(hashmap, hashmap->size - 1), hashmap->stride_key + hashmap->stride_value);
-			hashmap->size--;
-
-			// Do the same for the bucket entry
-			(&bucket->data)[i] = (&bucket->data)[bucket->size - 1];
-			bucket->size--;
-
-			// Now find the element that was moved and update the index
-			HashMap_Bucket* other_bucket = hashmap->table.buckets[hashmap->func_hash(current_key) % hashmap->table.capacity];
-
-			for (size_t i = 0; i < other_bucket->size; i++) {
-
-				if ((&other_bucket->data)[i] == hashmap->size) {
-					(&other_bucket->data)[i] = elem_index;
-					return;
-				}
-
-			}
-		}
-	}
-}
-
-/*
-static int hashmap_has(const HashMap* hashmap, const void* key)
-{
-	size_t hash = hashmap->func_hash(key);
-	size_t index = hash % hashmap->table.capacity;
-	HashMap_Bucket* bucket = hashmap->table.buckets[index];
-
-	for (size_t i = 0; i < bucket->size; i++) {
-		const size_t elem_index = (&bucket->data)[i];
-		const void* current_key = hashmap_get_key(hashmap, elem_index);
-		if (hashmap->func_equal(key, current_key))
-			return 1;
-	}
-
-	return 0;
-}
-*/
-
-static void* hashmap_find(const HashMap* hashmap, const void* key)
-{
-	size_t hash = hashmap->func_hash(key);
-	size_t index = hash % hashmap->table.capacity;
-	HashMap_Bucket* bucket = hashmap->table.buckets[index];
-
-	for (size_t i = 0; i < bucket->size; i++) {
-		const size_t elem_index = (&bucket->data)[i];
-		const void* current_key = hashmap_get_key(hashmap, elem_index);
-		if (hashmap->func_equal(key, current_key))
-			return hashmap_get_value(hashmap, elem_index);
-	}
-
-	return NULL;
-}
-
-static void* hashmap_get_key(const HashMap* hashmap, const size_t index)
-{
-	//if (index >= hashmap->size) return NULL;
-	return ((char*)hashmap->data) + (hashmap->stride_key + hashmap->stride_value) * index;
-}
-
-static void* hashmap_get_value(const HashMap* hashmap, const size_t index)
-{
-	//if (index >= hashmap->size) return NULL;
-	return ((char*)hashmap->data) + (hashmap->stride_key + hashmap->stride_value) * index + hashmap->stride_key;
-}
-
-static size_t hashmap_size(const HashMap* hashmap)
-{
-	return hashmap->size;
-}
-
-static void hashmap_table_grow(HashMap* hashmap)
-{
-	// Clear the buckets
-	const size_t old_capacity = hashmap->table.capacity;
-
-	for (size_t i = 0; i < old_capacity; i++)
-		hashmap->table.buckets[i]->size = 0;
-
-	// Realloc the bucket array
-	void* old_buckets = hashmap->table.buckets;
-	hashmap->table.capacity = (size_t)(hashmap->table.capacity * HASHMAP_GROWTH_FACTOR) + 1;
-	hashmap->table.buckets = TETRAPAL_REALLOC(hashmap->table.buckets, sizeof(*hashmap->table.buckets) * hashmap->table.capacity);
-
-	if (hashmap->table.buckets == NULL) 
-	{ 
-		perror("HASHMAP: REALLOC FAILED"); 
-		hashmap->table.buckets = old_buckets; // Restore pointer to old data
-		return;
-	}
-
-	// Allocate new buckets
-	for (size_t i = old_capacity; i < hashmap->table.capacity; i++) 
-	{
-		HashMap_Bucket* bucket = TETRAPAL_MALLOC(sizeof(*bucket) + sizeof(bucket->data) * HASHMAP_BUCKET_RESERVE);
-
-		if (!bucket) 
-		{ 
-			perror("HASHMAP: REALLOC FAILED"); 
-			exit(1); 
-		}
-
-		bucket->capacity = HASHMAP_BUCKET_RESERVE;
-		bucket->size = 0;
-		hashmap->table.buckets[i] = bucket;
-	}
-
-	// Rehash all elements by iterating through the element array
-	for (size_t i = 0; i < hashmap->size; i++) {
-
-		const void* key = hashmap_get_key(hashmap, i);
-		size_t hash = hashmap->func_hash(key);
-		size_t index = hash % hashmap->table.capacity;
-		HashMap_Bucket* bucket = hashmap->table.buckets[index];
-
-		// Realloc the bucket if it is at capacity
-		if (bucket->size == bucket->capacity) 
-		{
-			bucket->capacity = (size_t)(bucket->capacity * HASHMAP_GROWTH_FACTOR) + 1;
-			HashMap_Bucket* temp = bucket;
-
-			bucket = TETRAPAL_REALLOC(bucket, sizeof(*bucket) + sizeof(bucket->data) * bucket->capacity);
-
-			if (bucket == NULL) 
-			{ 
-				perror("HASHMAP: REALLOC FAILED"); 
-				bucket = temp; // Restore pointer to old data
-				return;
-			}
-
-			hashmap->table.buckets[index] = bucket; // Prevent dangling pointer!
-		}
-
-		// Add index to the bucket
-		(&bucket->data)[bucket->size] = i;
-		bucket->size++;
-	}
-}
-
-// ===============================================================
-//	Hash Set 
-// ===============================================================	
-
-static HashSet* hashset_new(const size_t stride, size_t reserve, const HashSet_Func_Hash func_hash, const HashSet_Func_Equal func_equal)
-{
-	HashSet* hashset = TETRAPAL_MALLOC(sizeof(*hashset));
-	if (!hashset) { perror("MAP: MALLOC ERROR"); exit(1); }
-
-	if (reserve < 1) reserve = 1;
-
-	hashset->capacity = reserve;
-	hashset->stride = stride;
-	hashset->size = 0;
-	hashset->func_hash = func_hash;
-	hashset->func_equal = func_equal;
-	hashset->map.capacity = (size_t)(reserve * HASHSET_GROWTH_FACTOR) + 1;
-
-	hashset->data = TETRAPAL_MALLOC(stride * hashset->capacity);
-	if (!hashset->data) { perror("MAP: MALLOC ERROR"); exit(1); }
-
-	hashset->map.buckets = TETRAPAL_MALLOC(sizeof(*hashset->map.buckets) * hashset->map.capacity);
-	if (!hashset->map.buckets) { perror("MAP: MALLOC ERROR"); exit(1); }
-
-	// Allocate buckets
-	for (size_t i = 0; i < hashset->map.capacity; i++) {
-		hashset->map.buckets[i] = TETRAPAL_MALLOC(sizeof(*hashset->map.buckets[i]) + sizeof(hashset->map.buckets[i]->data) * HASHSET_BUCKET_RESERVE);
-		if (!hashset->map.buckets[i]) { perror("MAP: MALLOC ERROR"); exit(1); }
-		hashset->map.buckets[i]->capacity = HASHSET_BUCKET_RESERVE;
-		hashset->map.buckets[i]->size = 0;
-	}
-
-	return hashset;
-}
-
-static void hashset_free(HashSet* hashset)
-{
-	if (!hashset) return;
-
-	for (size_t i = 0; i < hashset->map.capacity; i++)
-		TETRAPAL_FREE(hashset->map.buckets[i]);
-
-	TETRAPAL_FREE(hashset->map.buckets);
-	TETRAPAL_FREE(hashset->data);
-	TETRAPAL_FREE(hashset);
-}
-
-static void hashset_insert(HashSet* hashset, const void* element)
-{
-	size_t hash = hashset->func_hash(element);
-	size_t index = hash % hashset->map.capacity;
-	HashSet_Bucket* bucket = hashset->map.buckets[index];
-
-	// Iterate through the bucket until we get to the end, ensuring the element doesn't already exist.
-	for (size_t i = 0; i < bucket->size; i++) {
-		const size_t elem_index = (&bucket->data)[i];
-		const void* current = hashset_get(hashset, elem_index);
-		if (hashset->func_equal(element, current))
-			return;
-	}
-
-	// Realloc the element array if it is at capacity
-	if (hashset->size == hashset->capacity) {
-		hashset->capacity = (size_t)(hashset->capacity * HASHSET_GROWTH_FACTOR) + 1;
-		void* temp = hashset->data;
-		hashset->data = TETRAPAL_REALLOC(hashset->data, hashset->stride * hashset->capacity);
-		if (!hashset->data) { perror("MAP: REALLOC ERROR"); TETRAPAL_FREE(temp); exit(1); }
-	}
-
-	// Realloc the bucket if it is at capacity
-	if (bucket->size == bucket->capacity) {
-		bucket->capacity = (size_t)(bucket->capacity * HASHSET_GROWTH_FACTOR) + 1;
-		void* temp = bucket;
-		bucket = TETRAPAL_REALLOC(bucket, sizeof(*bucket) + sizeof(bucket->data) * bucket->capacity);
-		if (!bucket) { perror("MAP: REALLOC ERROR"); TETRAPAL_FREE(temp); exit(1); }
-		hashset->map.buckets[index] = bucket; // Prevent dangling pointer!
-	}
-
-	// Add the element to the element array
-	memcpy(((char*)hashset->data) + hashset->stride * hashset->size, element, hashset->stride);
-	hashset->size++;
-
-	// Add index to the bucket
-	(&bucket->data)[bucket->size] = hashset->size - 1;
-	bucket->size++;
-
-	// Grow and rehash the map if we hit the load factor
-	if (hashset->size / (double)hashset->map.capacity > HASHSET_LOAD_FACTOR)
-		hashset_map_grow(hashset);
-}
-
-/* 
-static void hashset_remove(HashSet* hashset, const void* element)
-{
-	size_t hash = hashset->func_hash(element);
-	size_t index = hash % hashset->map.capacity;
-	HashSet_Bucket* bucket = hashset->map.buckets[index];
-
-	// Iterate through the bucket until we find the element, if it exists
-	for (size_t i = 0; i < bucket->size; i++) {
-
-		const size_t elem_index = (&bucket->data)[i];
-		void* current = ((char*)hashset->data) + hashset->stride * elem_index;
-
-		if (hashset->func_equal(element, current)) { // Element was found
-
-			// Replacing the element with the last element and decrease size
-			memcpy(current, hashset_end(hashset), hashset->stride);
-			hashset->size--;
-
-			// Do the same for the bucket entry
-			(&bucket->data)[i] = (&bucket->data)[bucket->size - 1];
-			bucket->size--;
-
-			// Now find the element that was moved and update the index
-			HashSet_Bucket* other_bucket = hashset->map.buckets[hashset->func_hash(current) % hashset->map.capacity];
-
-			for (size_t i = 0; i < other_bucket->size; i++) {
-				if ((&other_bucket->data)[i] == hashset->size) {
-					(&other_bucket->data)[i] = elem_index;
-					return;
-				}
-			}
-		}
-	}
-}
-
-static int hashset_has(const HashSet* hashset, const void* element)
-{
-	size_t hash = hashset->func_hash(element);
-	size_t index = hash % hashset->map.capacity;
-	HashSet_Bucket* bucket = hashset->map.buckets[index];
-
-	for (size_t i = 0; i < bucket->size; i++) {
-		const size_t elem_index = (&bucket->data)[i];
-		const void* current = hashset_get(hashset, elem_index);
-		if (hashset->func_equal(element, current))
-			return 1;
-	}
-
-	return 0;
-}
- */
-
-static const void* hashset_get(const HashSet* hashset, const size_t index)
-{
-	//if (index >= hashset->size) return NULL;
-	return ((char*)hashset->data) + hashset->stride * index;
-}
-
-static const void* hashset_begin(const HashSet* hashset)
-{
-	return ((char*)hashset->data);
-}
-/* 
-static const void* hashset_end(const HashSet* hashset)
-{
-	return ((char*)hashset->data) + hashset->stride * (hashset->size - 1);
-}
- */
-static size_t hashset_size(const HashSet* hashset)
-{
-	return hashset->size;
-}
-
-static void hashset_map_grow(HashSet* hashset)
-{
-	// Clear the buckets
-	const size_t old_capacity = hashset->map.capacity;
-	hashset->map.capacity = (size_t)(hashset->map.capacity * HASHSET_GROWTH_FACTOR) + 1;
-
-	for (size_t i = 0; i < old_capacity; i++)
-		hashset->map.buckets[i]->size = 0;
-
-	// Realloc the bucket array
-	void* old_buckets = hashset->map.buckets;
-	hashset->map.buckets = TETRAPAL_REALLOC(hashset->map.buckets, sizeof(*hashset->map.buckets) * hashset->map.capacity);
-	if (!hashset->map.buckets) { perror("MAP: REALLOC ERROR"); TETRAPAL_FREE(old_buckets); exit(1); }
-
-	// Allocate new buckets
-	for (size_t i = old_capacity; i < hashset->map.capacity; i++) {
-		hashset->map.buckets[i] = TETRAPAL_MALLOC(sizeof(*hashset->map.buckets[i]) + sizeof(hashset->map.buckets[i]->data) * HASHSET_BUCKET_RESERVE);
-		if (!hashset->map.buckets[i]) { perror("MAP: MALLOC ERROR"); exit(1); }
-		hashset->map.buckets[i]->capacity = HASHSET_BUCKET_RESERVE;
-		hashset->map.buckets[i]->size = 0;
-	}
-
-	// Rehash all elements by iterating through the element array
-	for (size_t i = 0; i < hashset->size; i++) {
-
-		const void* element = ((char*)hashset->data) + hashset->stride * i;
-
-		size_t hash = hashset->func_hash(element);
-		size_t index = hash % hashset->map.capacity;
-		HashSet_Bucket* bucket = hashset->map.buckets[index];
-
-		// Realloc the bucket if it is at capacity
-		if (bucket->size == bucket->capacity) {
-			bucket->capacity = (size_t)(bucket->capacity * HASHSET_GROWTH_FACTOR) + 1;
-			void* temp = bucket;
-			bucket = TETRAPAL_REALLOC(bucket, sizeof(*bucket) + sizeof(bucket->data) * bucket->capacity);
-			if (!bucket) { perror("MAP: REALLOC ERROR"); TETRAPAL_FREE(temp); exit(1); }
-			hashset->map.buckets[index] = bucket; // Prevent dangling pointer!
-		}
-
-		// Add index to the bucket
-		(&bucket->data)[bucket->size] = i;
-		bucket->size++;
-	}
-}
-
-// ===============================================================
-//	Tetrapal Core
-// ===============================================================
-
-TetrapalData* tetrapal_new(const float *points, const int size)
-{
-	// If no points are given then fail gracefully
-	if (size <= 0)
-	{
-		return NULL;
-	}
-
-	TetrapalData* tetrapal = TETRAPAL_MALLOC(sizeof(*tetrapal));
+	Tetrapal* tetrapal = TETRAPAL_MALLOC(sizeof(*tetrapal));
 
 	if (tetrapal == NULL)
-	{
 		return NULL;
+
+	/* Set all pointers to null. */
+	tetrapal->vertices.coordinates = NULL;
+	tetrapal->vertices.incident_simplex = NULL;
+	tetrapal->vertices.tree = NULL;
+	tetrapal->simplices.adjacent_simplex = NULL;
+	tetrapal->simplices.incident_vertex = NULL;
+	tetrapal->simplices.flags = NULL;
+	tetrapal->simplices.deleted.simplices = NULL;
+	tetrapal->stack.data = NULL;
+	tetrapal->cavity.facets.incident_vertex = NULL;
+	tetrapal->cavity.facets.adjacent_simplex = NULL;
+	tetrapal->cavity.facets.boundary_facet = NULL;
+	tetrapal->cavity.table.edge = NULL;
+	tetrapal->cavity.table.facet = NULL;
+
+	/* Find the first d-simplex and determine the number of dimensions of the point set. */
+	vertex_t v[4];
+	find_first_simplex(tetrapal, points, size, v);
+
+	/* Choose the appropriate path based on the number of dimensions. */
+	error_t error = ERROR_NONE;
+
+	switch (tetrapal->dimensions)
+	{
+	case 0:
+		error = triangulate_0d(tetrapal);
+		break;
+
+	case 1:
+		error = triangulate_1d(tetrapal, points, size);
+		break;
+
+	case 2:
+		error = triangulate_2d(tetrapal, v, points, size);
+		break;
+
+	case 3:
+		error = triangulate_3d(tetrapal, v, points, size);
+		break;
 	}
 
-	// Begin initialising struct data
-	tetrapal->size = size;
-	tetrapal->dimensions = 0;
-	tetrapal->vertices = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices) * size);
-	tetrapal->adjacency = NULL;
-	tetrapal->graph = NULL;
-	tetrapal->number_of_segments = 0;
-	tetrapal->number_of_triangles = 0;
-	tetrapal->number_of_tetrahedra = 0;
-	tetrapal->orient_a[0] = tetrapal->orient_a[1] = tetrapal->orient_a[2] = 0;
-	tetrapal->orient_b[0] = tetrapal->orient_b[1] = tetrapal->orient_b[2] = 0;
-	tetrapal->orient_c[0] = tetrapal->orient_c[1] = tetrapal->orient_c[2] = 0;
-
-	if (tetrapal->vertices == NULL)
+	/* Initialisation failed for whatever reason; abort. */
+	if (error != ERROR_NONE)
 	{
 		tetrapal_free(tetrapal);
 		return NULL;
 	}
 
-	// Add all vertices
-	for (int i = 0; i < size; i++)
-	{
-		// Clamp the input between 0.0 and 1.0
-		float px = points[i * 3 + 0];
-		float py = points[i * 3 + 1];
-		float pz = points[i * 3 + 2];
-
-		clamp_float(&px, 0.0f, 1.0f);
-		clamp_float(&py, 0.0f, 1.0f);
-		clamp_float(&pz, 0.0f, 1.0f);
-
-		tetrapal->vertices[i].x = (double)px * TETRAPAL_PRECISION;
-		tetrapal->vertices[i].y = (double)py * TETRAPAL_PRECISION;
-		tetrapal->vertices[i].z = (double)pz * TETRAPAL_PRECISION;
-	}
-
-	// A 0-dimensional triangulation requires no further processing (only one vertex, spatial/adjacency structures are not needed)
-	if (size == 1)
-	{
-		tetrapal->dimensions = 0;
-		return tetrapal;
-	}
-
-	// Initialise adjacency structures
-	tetrapal->adjacency = hashmap_new(sizeof(TetrapalAdjacencyKey), sizeof(int), size * 7, adjacency_hash, adjacency_compare_equal);
-	tetrapal->graph = graph_new(size);
-
-	if (tetrapal->adjacency == NULL || tetrapal->graph == NULL)
-	{
-		tetrapal_free(tetrapal);
-		return NULL;
-	}
-
-	// Now we can start the main triangulation algorithm, repeatedly attempting decreasing dimensions until we find the appropriate one
-	if (triangulate_3d(tetrapal) == 0)
-	{
-		if (triangulate_2d(tetrapal) == 0)
-		{
-			if (triangulate_1d(tetrapal) == 0)
-			{
-				// If all attempts failed for whatever reason, abort
-				tetrapal_free(tetrapal);
-				return NULL;
-			}
-		}
-	}
-
-	// Cache the number of segments
-	tetrapal->number_of_segments = graph_find_number_of_unique_edges(tetrapal->graph);
-
-	// Success!!
 	return tetrapal;
 }
 
-void tetrapal_free(TetrapalData* tetrapal)
+void tetrapal_free(Tetrapal* tetrapal)
 {
 	if (tetrapal == NULL)
-	{
 		return;
-	}
 
-	if (tetrapal->vertices != NULL)
-	{
-		TETRAPAL_FREE(tetrapal->vertices);
-	}
-
-	// These functions should have their own NULL checks
-	graph_free(tetrapal->graph);
-	hashmap_free(tetrapal->adjacency);
+	TETRAPAL_FREE(tetrapal->vertices.coordinates);
+	TETRAPAL_FREE(tetrapal->vertices.incident_simplex);
+	TETRAPAL_FREE(tetrapal->vertices.tree);
+	TETRAPAL_FREE(tetrapal->simplices.incident_vertex);
+	TETRAPAL_FREE(tetrapal->simplices.adjacent_simplex);
+	TETRAPAL_FREE(tetrapal->simplices.flags);
+	TETRAPAL_FREE(tetrapal->simplices.deleted.simplices);
+	stack_free(&tetrapal->stack);
+	cavity_free(&tetrapal->cavity);
 
 	TETRAPAL_FREE(tetrapal);
 }
 
-int tetrapal_interpolate(const TetrapalData* tetrapal, const float point[3],
-	int* a, int* b, int* c, int* d,
-	double* u, double* v, double* w, double* x)
+int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights)
 {
-	*a = *b = *c = *d = 0;
-	*u = *v = *w = *x = 0.0;
+	if (tetrapal == NULL)
+		return 0;
 
-	// Clamp the input between 0.0 and 1.0
-	float px = point[0];
-	float py = point[1];
-	float pz = point[2];
+	coord_t p[3];
+	simplex_t t; /* Enclosing simplex; unused. */
 
-	clamp_float(&px, 0.0f, 1.0f);
-	clamp_float(&py, 0.0f, 1.0f);
-	clamp_float(&pz, 0.0f, 1.0f);
+	switch (tetrapal->dimensions)
+	{
+	case 0:
+		return (int)interpolate_0d(indices, weights);
 
-	const int64_t p[3] = {
-		(double)px * TETRAPAL_PRECISION,
-		(double)py * TETRAPAL_PRECISION,
-		(double)pz * TETRAPAL_PRECISION };
+	case 1:
+		transform_1d(tetrapal, point, p);
+		return (int)interpolate_1d(tetrapal, p, indices, weights);
 
-	if (!tetrapal) return 0;
-	switch (tetrapal->dimensions) {
-	case 0: *a = 1; *u = 1.0; return 1;
-	case 1: return interpolate_1d(tetrapal, p, a, b, u, v);
-	case 2: return interpolate_2d(tetrapal, p, a, b, c, u, v, w);
-	case 3: return interpolate_3d(tetrapal, p, a, b, c, d, u, v, w, x);
-	default: return 0;
+	case 2:
+		transform_2d(tetrapal, point, p);
+		return (int)interpolate_2d(tetrapal, p, indices, weights, &t);
+
+	case 3:
+		transform_3d(point, p);
+		return (int)interpolate_3d(tetrapal, p, indices, weights, &t);
+
+	default:
+		return 0;
 	}
 }
 
-int tetrapal_nearest_neighbour(const TetrapalData* tetrapal, const float point[3])
+int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights, int size)
 {
-	const int64_t p[3] =
+	if (tetrapal == NULL)
+		return 0;
+
+	coord_t p[3];
+
+	switch (tetrapal->dimensions)
 	{
-		(double)point[0] * TETRAPAL_PRECISION,
-		(double)point[1] * TETRAPAL_PRECISION,
-		(double)point[2] * TETRAPAL_PRECISION
-	};
+	case 0:
+		return (int)interpolate_0d(indices, weights);
 
-	if (!tetrapal) return 0;
-	if (tetrapal->dimensions < 1) return 0;
+	case 1:
+		transform_1d(tetrapal, point, p);
+		return (int)interpolate_1d(tetrapal, p, indices, weights);
 
-	int64_t pa[3], pb[3];
-	int a, null[3];
+	case 2:
+		transform_2d(tetrapal, point, p);
+		return (int)natural_neighbour_2d(tetrapal, p, indices, weights, size);
 
-	// Use the spatial grid to get a sensible starting index
-	spatialgrid_locate(tetrapal, p, &a, &null[0], &null[1], &null[2]);
+	case 3:
+		transform_3d(point, p);
+		return (int)natural_neighbour_3d(tetrapal, p, indices, weights, size);
 
-	// Walk through the graph, moving towards the closest vertex
-	while (1)
-	{
-		get_coordinates(tetrapal, a, pa);
-		const double dist_a = distance_squared(p, pa);
-
-		// Check the distance to every connected vertex and find the closest
-		int closest = a;
-
-		for (size_t i = 0; i < graph_list_size(tetrapal->graph, a); i++)
-		{
-			const int b = graph_get(tetrapal->graph, a, i);
-			get_coordinates(tetrapal, b, pb);
-
-			const double dist_b = distance_squared(p, pb);
-
-			if (dist_b < dist_a)
-				closest = b;
-		}
-
-		// If the closest vertex is the one we started with, we are done
-		if (closest == a)
-			break;
-
-		// Otherwise update the current vertex and start again
-		else a = closest;
-		continue;
+	default:
+		return 0;
 	}
-
-	return a;
 }
 
-int tetrapal_number_of_dimensions(const TetrapalData* tetrapal)
+int tetrapal_nearest_neighbour(const Tetrapal* tetrapal, const float point[3])
 {
 	if (tetrapal == NULL)
 		return -1;
 
-	return tetrapal->dimensions;
-}
+	coord_t p[3];
 
-int tetrapal_number_of_vertices(const TetrapalData* tetrapal)
-{
-	if (tetrapal == NULL)
-		return 0;
-
-	return tetrapal->size;
-}
-
-int tetrapal_number_of_segments(const TetrapalData* tetrapal)
-{
-	if (tetrapal == NULL)
-		return 0;
-
-	if (tetrapal->dimensions < 1)
-		return 0;
-
-	return tetrapal->number_of_segments;
-}
-
-int tetrapal_number_of_triangles(const TetrapalData* tetrapal)
-{
-	if (tetrapal == NULL)
-		return 0;
-
-	if (tetrapal->dimensions < 2)
-		return 0;
-
-	return tetrapal->number_of_triangles;
-}
-
-int tetrapal_number_of_tetrahedra(const TetrapalData* tetrapal)
-{
-	if (tetrapal == NULL)
-		return 0;
-
-	if (tetrapal->dimensions < 3)
-		return 0;
-
-	return tetrapal->number_of_tetrahedra;
-}
-
-int tetrapal_get_vertices(const TetrapalData* tetrapal, int* buffer)
-{
-	if (tetrapal == NULL)
-		return EXIT_FAILURE;
-
-	if (buffer == NULL)
-		return EXIT_FAILURE;
-
-	int count = tetrapal_number_of_vertices(tetrapal);
-
-	for (int i = 0; i < count; i++)
+	switch (tetrapal->dimensions)
 	{
-		buffer[i] = i;
+	case 0:
+		return (int)nearest_0d();
+
+	case 1:
+		transform_1d(tetrapal, point, p);
+		return (int)nearest_1d(tetrapal, p);
+
+	case 2:
+		transform_2d(tetrapal, point, p);
+		return (int)nearest_2d(tetrapal, p);
+
+	case 3:
+		transform_3d(point, p);
+		return (int)nearest_3d(tetrapal, p);
+
+	default:
+		return -1;
 	}
-
-	return EXIT_SUCCESS;
 }
 
-int tetrapal_get_segments(const TetrapalData* tetrapal, int* buffer)
+int tetrapal_number_of_elements(const Tetrapal* tetrapal)
 {
 	if (tetrapal == NULL)
-		return EXIT_FAILURE;
+		return 0;
 
-	if (tetrapal->dimensions < 1)
-		return EXIT_FAILURE;
+	int count = 0;
 
-	if (buffer == NULL)
-		return EXIT_FAILURE;
-
-	int count = tetrapal_number_of_segments(tetrapal);
-	HashSet* stack = hashset_new(sizeof(int[2]), count, segment_hash, segment_compare_equal);
-
-	if (stack == NULL)
-		return EXIT_FAILURE;
-
-	for (size_t i = 0; i < tetrapal->graph->size; i++)
+	switch (tetrapal->dimensions)
 	{
-		for (size_t j = 0; j < graph_list_size(tetrapal->graph, i); j++)
+	case 0:
+		return 1;
+
+	case 1:
+		return (int)(tetrapal->vertices.count - 1);
+
+	case 2:
+	case 3:
+
+		for (size_t i = 0; i < tetrapal->simplices.count; i++)
 		{
-			int segment[2] = {i, graph_get(tetrapal->graph, i, j)};
-			hashset_insert(stack, segment);
-		}
-	}
-
-	// Copy contents of stack to the output buffer
-	memcpy(buffer, hashset_begin(stack), sizeof(*buffer) * 2 * hashset_size(stack));
-
-	// Free hash set
-	hashset_free(stack);
-
-	return EXIT_SUCCESS;
-}
-
-int tetrapal_get_triangles(const TetrapalData* tetrapal, int* buffer)
-{
-	if (tetrapal == NULL)
-		return EXIT_FAILURE;
-
-	if (tetrapal->dimensions < 2)
-		return EXIT_FAILURE;
-
-	if (buffer == NULL)
-		return EXIT_FAILURE;
-
-	int count = tetrapal_number_of_triangles(tetrapal);
-	HashSet* stack = hashset_new(sizeof(int[3]), count, triangle_hash, triangle_compare_equal);
-
-	if (stack == NULL)
-		return EXIT_FAILURE;
-
-	if (tetrapal->dimensions == 3)
-	{
-		// Get finite triangles by iterating through the adjacency list
-		for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
-		{
-			const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-
-			// Ignore infinite triangles
-			if (is_infinite_triangle(key->a, key->b, key->c))
+			/* Skip infinite simplices. */
+			if (is_infinite_simplex(tetrapal, i) == true)
 				continue;
 
-			int triangle[3] = { key->a, key->b, key->c };
-			hashset_insert(stack, triangle);
-		}
-	}
-	else if (tetrapal->dimensions == 2)
-	{
-		// Get finite triangles by iterating through the adjacency list
-		for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
-		{
-			const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-			const int* vertex = hashmap_get_value(tetrapal->adjacency, i);
-
-			// Ignore infinite triangles
-			if (is_infinite_triangle(key->a, key->b, *vertex))
+			/* Skip free simplices. */
+			if (is_free_simplex(tetrapal, i) == true)
 				continue;
 
-			int triangle[3] = { key->a, key->b, *vertex };
-			hashset_insert(stack, triangle);
+			count += 1;
 		}
+
+		return count;
+
+	default:
+		return 0;
 	}
-
-	// Copy contents of stack to the output buffer
-	memcpy(buffer, hashset_begin(stack), sizeof(*buffer) * 3 * hashset_size(stack));
-
-	// Free hash set
-	hashset_free(stack);
-
-	return EXIT_SUCCESS;
 }
 
-int tetrapal_get_tetrahedra(const TetrapalData* tetrapal, int* buffer)
+int tetrapal_element_size(const Tetrapal* tetrapal)
+{
+	return simplex_size(tetrapal);
+}
+
+int tetrapal_get_elements(const Tetrapal* tetrapal, int* buffer)
 {
 	if (tetrapal == NULL)
-		return EXIT_FAILURE;
+		return ERROR_INVALID_ARGUMENT;
 
-	if (tetrapal->dimensions < 3)
-		return EXIT_FAILURE;
+	const int stride = tetrapal_element_size(tetrapal);
+	int count = 0;
 
-	if (buffer == NULL)
-		return EXIT_FAILURE;
-
-	int count = tetrapal_number_of_tetrahedra(tetrapal);
-	HashSet* stack = hashset_new(sizeof(int[4]), count, tetrahedron_hash, tetrahedron_compare_equal);
-
-	if (stack == NULL)
-		return EXIT_FAILURE;
-
-	// Get finite triangles by iterating through the adjacency list
-	for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
+	switch (tetrapal->dimensions)
 	{
-		const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-		const int* vertex = hashmap_get_value(tetrapal->adjacency, i);
+	case 0:
+		buffer[0] = 0;
+		return ERROR_NONE;
 
-		// Ignore infinite tetrahedra
-		if (is_infinite_tetrahedron(key->a, key->b, key->c, *vertex))
+	case 1:
+
+		for (size_t i = 0; i < tetrapal->vertices.count - 1; i++)
+		{
+			buffer[count * stride + 0] = tetrapal->vertices.tree[i + 0];
+			buffer[count * stride + 1] = tetrapal->vertices.tree[i + 1];
+			count += 1;
+		}
+
+		return ERROR_NONE;
+
+	case 2:
+	case 3:
+
+		for (size_t i = 0; i < tetrapal->simplices.count; i++)
+		{
+			/* Skip infinite simplices. */
+			if (is_infinite_simplex(tetrapal, i) == true)
+				continue;
+
+			/* Skip free simplices. */
+			if (is_free_simplex(tetrapal, i) == true)
+				continue;
+
+			for (int j = 0; j < stride; j++)
+			{
+				buffer[count * stride + j] = tetrapal->simplices.incident_vertex[i * stride + j];
+			}
+
+			count += 1;
+		}
+
+		return ERROR_NONE;
+	}
+
+	return ERROR_INVALID_ARGUMENT;
+}
+
+/* Static (internal) functions. */
+
+static vertex_t new_vertex(Tetrapal* tetrapal, const coord_t* p)
+{
+	const vertex_t v = (vertex_t)tetrapal->vertices.count;
+
+	for (local_t i = 0; i < tetrapal->dimensions; i++)
+		tetrapal->vertices.coordinates[v * tetrapal->dimensions + i] = p[i];
+
+	tetrapal->vertices.count += 1;
+
+	return v;
+}
+
+static error_t free_simplex(Tetrapal* tetrapal, simplex_t t)
+{
+	TETRAPAL_ASSERT(tetrapal->simplices.count > 0, "No more simplices left to free!");
+
+	if (check_deleted_capacity(tetrapal) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	const size_t num_deleted = tetrapal->simplices.deleted.count;
+	tetrapal->simplices.deleted.simplices[num_deleted] = t;
+	tetrapal->simplices.flags[t].bit.is_free = true;
+
+	tetrapal->simplices.deleted.count += 1;
+	tetrapal->simplices.count -= 1;
+
+	return ERROR_NONE;
+}
+
+static inline void set_adjacent_simplex(Tetrapal* tetrapal, simplex_t t, simplex_t a, local_t i)
+{
+	tetrapal->simplices.adjacent_simplex[t * simplex_size(tetrapal) + i] = a;
+}
+
+static inline vertex_t get_incident_vertex(const Tetrapal* tetrapal, simplex_t t, local_t i)
+{
+	return tetrapal->simplices.incident_vertex[t * simplex_size(tetrapal) + i];
+}
+
+static inline simplex_t get_adjacent_simplex(const Tetrapal* tetrapal, simplex_t t, local_t i)
+{
+	return tetrapal->simplices.adjacent_simplex[t * simplex_size(tetrapal) + i];
+}
+
+static inline simplex_t get_incident_simplex(const Tetrapal* tetrapal, vertex_t v)
+{
+	return tetrapal->vertices.incident_simplex[v];
+}
+
+static inline void get_circumcentre(const Tetrapal* tetrapal, simplex_t t, coord_t* result)
+{
+	switch (tetrapal->dimensions)
+	{
+	case 2:
+		circumcentre_2d(
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 3 + 0] * 2],
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 3 + 1] * 2],
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 3 + 2] * 2],
+			result);
+		return;
+
+	case 3:
+		circumcentre_3d(
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 4 + 0] * 3],
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 4 + 1] * 3],
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 4 + 2] * 3],
+			&tetrapal->vertices.coordinates[tetrapal->simplices.incident_vertex[t * 4 + 3] * 3],
+			result);
+		return;
+
+	default:
+		return;
+	}
+}
+
+static inline const coord_t* get_coordinates(const Tetrapal* tetrapal, vertex_t v)
+{
+	TETRAPAL_ASSERT(v != VERTEX_INFINITE, "Attempted to get the coordinates of an infinite vertex!");
+
+	return &tetrapal->vertices.coordinates[v * tetrapal->dimensions];
+}
+
+static void get_facet_normal(const Tetrapal* tetrapal, simplex_t t, local_t i, coord_t result[3])
+{
+	/* Get the coordinates of the facet. */
+	const vertex_t v[3] =
+	{
+		get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][0]),
+		get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][1]),
+		get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][2])
+	};
+
+	TETRAPAL_ASSERT(
+		v[0] != VERTEX_INFINITE &&
+		v[1] != VERTEX_INFINITE &&
+		v[2] != VERTEX_INFINITE,
+		"Attempted to get the normal of an infinite facet!");
+
+	const coord_t* p[3] =
+	{
+		get_coordinates(tetrapal, v[0]),
+		get_coordinates(tetrapal, v[1]),
+		get_coordinates(tetrapal, v[2]),
+	};
+
+	/* Calculate normal. */
+	coord_t ab[3], ac[3], cross[3];
+	sub_3d(p[1], p[0], ab);
+	sub_3d(p[2], p[0], ac);
+	cross_3d(ab, ac, cross);
+	normalise_3d(cross, result);
+}
+
+static inline local_t find_vertex(const Tetrapal* tetrapal, simplex_t t, vertex_t v)
+{
+	const vertex_t* vi = &tetrapal->simplices.incident_vertex[t * simplex_size(tetrapal)];
+
+	/* Fast branchless check borrowed from Geogram. */
+	local_t i = 0;
+
+	switch (tetrapal->dimensions)
+	{
+	case 2:
+		i = (local_t)((vi[1] == v) | ((vi[2] == v) * 2));
+		break;
+
+	case 3:
+		i = (local_t)((vi[1] == v) | ((vi[2] == v) * 2) | ((vi[3] == v) * 3));
+		break;
+	}
+
+	TETRAPAL_ASSERT(get_incident_vertex(tetrapal, t, i) == v, "Could not find vertex in simplex!");
+
+	return i;
+}
+
+static inline local_t find_adjacent(const Tetrapal* tetrapal, simplex_t t, simplex_t adj)
+{
+	const simplex_t* ta = &tetrapal->simplices.adjacent_simplex[t * simplex_size(tetrapal)];
+
+	/* Fast branchless check borrowed from Geogram. */
+	local_t i = 0;
+
+	switch (tetrapal->dimensions)
+	{
+	case 2:
+		i = (local_t)((ta[1] == adj) | ((ta[2] == adj) * 2));
+		break;
+
+	case 3:
+		i = (local_t)((ta[1] == adj) | ((ta[2] == adj) * 2) | ((ta[3] == adj) * 3));
+		break;
+	}
+
+	return i;
+}
+
+static inline local_t find_facet_from_edge(const Tetrapal* tetrapal, simplex_t t, vertex_t a, vertex_t b)
+{
+	const vertex_t* v = &tetrapal->simplices.incident_vertex[t * simplex_size(tetrapal)];
+
+	/* Fast branchless check borrowed from Geogram. */
+	const local_t i = (local_t)((v[1] == a) | ((v[2] == a) * 2) | ((v[3] == a) * 3));
+	const local_t j = (local_t)((v[1] == b) | ((v[2] == b) * 2) | ((v[3] == b) * 3));
+
+	TETRAPAL_ASSERT(get_incident_vertex(tetrapal, t, i) == a, "Could not find vertex [a] from edge in simplex!");
+	TETRAPAL_ASSERT(get_incident_vertex(tetrapal, t, j) == b, "Could not find vertex [b] from edge in simplex!");
+
+	return facet_from_edge[i][j];
+}
+
+static inline bool is_infinite_simplex(const Tetrapal* tetrapal, simplex_t t)
+{
+	TETRAPAL_ASSERT(t < (tetrapal->simplices.count + tetrapal->simplices.deleted.count), "Simplex index out of range!");
+
+	return (bool)tetrapal->simplices.flags[t].bit.is_infinite;
+}
+
+static inline bool is_free_simplex(const Tetrapal* tetrapal, simplex_t t)
+{
+	TETRAPAL_ASSERT(t < (tetrapal->simplices.count + tetrapal->simplices.deleted.count), "Simplex index out of range!");
+
+	return (bool)tetrapal->simplices.flags[t].bit.is_free;
+}
+
+static inline bool is_coincident_simplex(const Tetrapal* tetrapal, simplex_t t, const float point[3])
+{
+	/* Check whether the query point is coincident with a vertex. */
+	for (local_t i = 0; i < simplex_size(tetrapal); i++)
+	{
+		const vertex_t v = get_incident_vertex(tetrapal, t, i);
+
+		if (v == VERTEX_INFINITE)
 			continue;
 
-		int tetrahedron[4] = { key->a, key->b, key->c, *vertex };
-		hashset_insert(stack, tetrahedron);
+		if (is_coincident_3d(point, get_coordinates(tetrapal, v)) == true)
+			return true;
 	}
 
-	// Copy contents of stack to the output buffer
-	memcpy(buffer, hashset_begin(stack), sizeof(*buffer) * 4 * hashset_size(stack));
-
-	// Free hash set
-	hashset_free(stack);
-
-	return EXIT_SUCCESS;
+	return false;
 }
 
-static uint32_t random_int(uint32_t* state)
+static inline local_t simplex_size(const Tetrapal* tetrapal)
 {
-	*state = 214013u * *state + 2531011u;
-    return (*state >> 16) & TETRAPAL_RANDOM_MAX;
+	return (local_t)(tetrapal->dimensions + 1);
 }
 
-static uint32_t random_range_int(uint32_t* state, const int32_t range)
+static error_t check_simplices_capacity(Tetrapal* tetrapal)
 {
-	return random_int(state) / (TETRAPAL_RANDOM_MAX / range + 1);
+	if (tetrapal->simplices.count + tetrapal->simplices.deleted.count < tetrapal->simplices.capacity)
+		return ERROR_NONE;
+
+	/* Arrays are at capacity; resize. */
+	size_t new_capacity = (size_t)(tetrapal->simplices.capacity * ARRAY_GROWTH_FACTOR) + 1;
+	void* new_incident = TETRAPAL_REALLOC(tetrapal->simplices.incident_vertex, sizeof(*tetrapal->simplices.incident_vertex) * new_capacity * simplex_size(tetrapal));
+	void* new_adjacent = TETRAPAL_REALLOC(tetrapal->simplices.adjacent_simplex, sizeof(*tetrapal->simplices.adjacent_simplex) * new_capacity * simplex_size(tetrapal));
+	void* new_flags = TETRAPAL_REALLOC(tetrapal->simplices.flags, sizeof(*tetrapal->simplices.flags) * new_capacity);
+
+	if (new_incident == NULL || new_adjacent == NULL || new_flags == NULL)
+	{
+		TETRAPAL_FREE(new_incident);
+		TETRAPAL_FREE(new_adjacent);
+		TETRAPAL_FREE(new_flags);
+		return ERROR_OUT_OF_MEMORY;
+	}
+
+	tetrapal->simplices.capacity = new_capacity;
+	tetrapal->simplices.incident_vertex = new_incident;
+	tetrapal->simplices.adjacent_simplex = new_adjacent;
+	tetrapal->simplices.flags = new_flags;
+
+	return ERROR_NONE;
 }
 
-static void swap_int(int* a, int* b)
+static error_t check_deleted_capacity(Tetrapal* tetrapal)
 {
-	int t = *a;
+	if (tetrapal->simplices.deleted.count < tetrapal->simplices.deleted.capacity)
+		return ERROR_NONE;
+
+	/* Arrays are at capacity; resize. */
+	size_t new_capacity = (size_t)(tetrapal->simplices.deleted.capacity * ARRAY_GROWTH_FACTOR) + 1;
+	void* new_data = TETRAPAL_REALLOC(tetrapal->simplices.deleted.simplices, sizeof(*tetrapal->simplices.deleted.simplices) * new_capacity);
+
+	if (new_data == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	tetrapal->simplices.deleted.capacity = new_capacity;
+	tetrapal->simplices.deleted.simplices = new_data;
+
+	return ERROR_NONE;
+}
+
+static size_t find_first_simplex(Tetrapal* tetrapal, const float* points, const int size, vertex_t v[4])
+{
+	size_t num_dimensions = 0;
+	coord_t p[4][3] = { 0 };
+
+	/* Get the first coordinate (i.e. the first vertex in the triangulation). */
+	v[0] = 0;
+	transform_3d(&points[v[0] * 3], p[0]);
+
+	/* Iterate over all the points to determine the affine span of the set. */
+	for (vertex_t i = 1; i < (vertex_t)size; i++)
+	{
+		switch (num_dimensions)
+		{
+		case 0:
+
+			v[1] = i;
+			transform_3d(&points[v[1] * 3], p[1]);
+
+			if (is_coincident_3d(p[0], p[1]) == false)
+				num_dimensions = 1;
+
+			break;
+
+		case 1:
+
+			v[2] = i;
+			transform_3d(&points[v[2] * 3], p[2]);
+
+			if (is_colinear_3d(p[0], p[1], p[2]) == false)
+				num_dimensions = 2;
+
+			break;
+
+		case 2:
+
+			v[3] = i;
+			transform_3d(&points[v[3] * 3], p[3]);
+
+			if (is_coplanar_3d(p[0], p[1], p[2], p[3]) == false)
+				num_dimensions = 3;
+
+			break;
+		}
+
+		if (num_dimensions == 3)
+			break;
+	}
+
+	/* Set the number of dimensions internally. */
+	tetrapal->dimensions = num_dimensions;
+	return num_dimensions;
+}
+
+static inline random_t random(random_t* seed)
+{
+	*seed = 214013u * *seed + 2531011u;
+	return (*seed >> 16) & RANDOM_MAX;
+}
+
+static inline random_t random_range(random_t* seed, random_t range)
+{
+	return random(seed) / (RANDOM_MAX / range + 1);
+}
+
+static inline void swap_vertex(vertex_t* a, vertex_t* b)
+{
+	vertex_t t = *a;
 	*a = *b;
 	*b = t;
 }
 
-static void clamp_float(float* value, float min, float max)
+static inline void swap_local(local_t* a, local_t* b)
 {
-	*value = *value < min ? min : (*value > max ? max : *value);
+	local_t t = *a;
+	*a = *b;
+	*b = t;
 }
 
-static void get_coordinates(const TetrapalData* tetrapal, const int i, int64_t coords[3])
+#ifdef TETRAPAL_DEBUG
+static bool is_enclosing_simplex(Tetrapal* tetrapal, simplex_t t, const float point[3])
 {
-	if (i == VERTEX_INFINITE || i == VERTEX_NULL || (size_t)i >= tetrapal->size)
+	/* Get the vertices' coordinates. */
+	const coord_t* p[4];
+
+	for (local_t i = 0; i < simplex_size(tetrapal); i++)
 	{
-		coords[0] = coords[1] = coords[2] = -1;
-		return;
+		const vertex_t v = get_incident_vertex(tetrapal, t, i);
+
+		/* We represent the coordinates of an infinite vertex as a NULL pointer. */
+		p[i] = (v == VERTEX_INFINITE) ? NULL : get_coordinates(tetrapal, v);
 	}
 
-	coords[0] = tetrapal->vertices[i].x;
-	coords[1] = tetrapal->vertices[i].y;
-	coords[2] = tetrapal->vertices[i].z;
+	/* If [t] is an infinite simplex, check if the point lies on the positive side of the finite facet. */
+	if (tetrapal->dimensions == 3)
+	{
+		for (local_t i = 0; i < 4; i++)
+		{
+			if (p[i] != NULL)
+				continue;
+
+			const local_t a = facet_opposite_vertex[i][0];
+			const local_t b = facet_opposite_vertex[i][1];
+			const local_t c = facet_opposite_vertex[i][2];
+
+			if (orient_3d(point, p[a], p[b], p[c]) >= 0)
+				return true;
+			else
+				return false;
+		}
+
+		/* Its not an infinite simplex, so check the orientation against each face. */
+		if (orient_3d(point, p[1], p[2], p[3]) >= 0 &&
+			orient_3d(p[0], point, p[2], p[3]) >= 0 &&
+			orient_3d(p[0], p[1], point, p[3]) >= 0 &&
+			orient_3d(p[0], p[1], p[2], point) >= 0)
+			return true;
+		else
+			return false;
+	}
+	else if (tetrapal->dimensions == 2)
+	{
+		for (local_t i = 0; i < 3; i++)
+		{
+			if (p[i] != NULL)
+				continue;
+
+			const local_t a = edge_opposite_vertex[i][0];
+			const local_t b = edge_opposite_vertex[i][1];
+
+			if (orient_2d(point, p[a], p[b]) >= 0)
+				return true;
+			else
+				return false;
+		}
+
+		/* Its not an infinite simplex, so check the orientation against each face. */
+		if (orient_2d(point, p[1], p[2]) >= 0 &&
+			orient_2d(p[0], point, p[2]) >= 0 &&
+			orient_2d(p[0], p[1], point) >= 0)
+			return true;
+		else
+			return false;
+	}
+	else return false;
 }
 
-static size_t adjacency_hash(const void* ptr_key)
+static void check_combinatorics(Tetrapal* tetrapal)
 {
-	TetrapalAdjacencyKey key = *(TetrapalAdjacencyKey*)ptr_key;
-	return
-		(10079 * key.a * key.a + 20047 * key.b + key.c) ^
-		(10079 * key.b * key.b + 20047 * key.c + key.a) ^
-		(10079 * key.c * key.c + 20047 * key.a + key.b);
+	int error = 0;
+	size_t count = tetrapal->simplices.count;
+	size_t freed = tetrapal->simplices.deleted.count;
+
+	for (simplex_t t = 0; t < (simplex_t)(count + freed); t++)
+	{
+		if (is_free_simplex(tetrapal, t))
+			continue;
+
+		/* Check adjacencies. */
+		for (local_t i = 0; i < simplex_size(tetrapal); i++)
+		{
+			const simplex_t adj = get_adjacent_simplex(tetrapal, t, i);
+
+			/* Check that adjacencies are set. */
+			if (adj == SIMPLEX_NULL)
+			{
+				printf("Simplex [%lu] is adjacent to a null simplex at [%i]!\n", t, i);
+				error++;
+				continue;
+			}
+
+			/* Check that there are no relations to free simplices. */
+			if (is_free_simplex(tetrapal, adj))
+			{
+				printf("Simplex [%lu] is adjacent to a free simplex [%lu] at [%i]!\n", t, adj, i);
+				error++;
+			}
+
+			/* Check that there are no self-relations. */
+			if (adj == t)
+			{
+				printf("Simplex [%lu] is adjacent to itself at [%i]!\n", t, i);
+				error++;
+			}
+
+			/* An adjacent simplex opposite the infinite vertex must be finite. */
+			if (is_infinite_simplex(tetrapal, adj) && get_incident_vertex(tetrapal, t, i) == VERTEX_INFINITE)
+			{
+				printf("Simplex [%lu] has an adjacent infinite simplex [%lu] opposite an infinite vertex at [%i]!\n", t, adj, i);
+				error++;
+			}
+
+			/* Check that relations are bi-directional. */
+			if (get_adjacent_simplex(tetrapal, adj, find_adjacent(tetrapal, adj, t)) != t)
+			{
+				printf("Simplex [%lu] lacks bi-directional adjacency with [%lu] at [%i]!\n", t, adj, i);
+				error++;
+			}
+		}
+
+		/* Check vertex incidence. */
+		for (local_t i = 0; i < simplex_size(tetrapal); i++)
+		{
+			/* Check that there are no duplicate vertices. */
+			for (local_t j = i + 1; j < simplex_size(tetrapal); j++)
+			{
+				const vertex_t v[2] =
+				{
+					get_incident_vertex(tetrapal, t, i),
+					get_incident_vertex(tetrapal, t, j)
+				};
+
+				if (v[0] == v[1])
+				{
+					printf("Simplex [%lu] has duplicate vertex [%li]\n", t, v[0]);
+					error++;
+				}
+			}
+		}
+	}
+
+	TETRAPAL_ASSERT(error == 0, "Combinatorial data is corrupted!");
 }
 
-static int adjacency_compare_equal(const void* a, const void* b)
+static void print_simplex_data(Tetrapal* tetrapal)
 {
-	TetrapalAdjacencyKey first = *(TetrapalAdjacencyKey*)a;
-	TetrapalAdjacencyKey second = *(TetrapalAdjacencyKey*)b;
-	return (
-		(first.a == second.a && first.b == second.b && first.c == second.c) ||
-		(first.a == second.b && first.b == second.c && first.c == second.a) ||
-		(first.a == second.c && first.b == second.a && first.c == second.b));
+	const size_t count = tetrapal->simplices.count;
+	const size_t capacity = tetrapal->simplices.capacity;
+	const size_t freed = tetrapal->simplices.deleted.count;
+
+	printf("** PRINTING SIMPLEX DATA **\n");
+	printf("Count: %zu\n", count);
+	printf("Capacity: %zu\n", capacity);
+	printf("Free: %zu\n", freed);
+
+	for (simplex_t t = 0; t < count + freed; t++)
+	{
+		if (is_free_simplex(tetrapal, t))
+		{
+			printf("[FREE] ");
+		}
+
+		printf("IDX: [%lu] V: [ ", t);
+
+		for (local_t i = 0; i < simplex_size(tetrapal); i++)
+		{
+			printf("%li ", get_incident_vertex(tetrapal, t, i));
+		}
+
+		printf("] T: [ ");
+
+		for (local_t i = 0; i < simplex_size(tetrapal); i++)
+		{
+			printf("%li ", get_adjacent_simplex(tetrapal, t, i));
+		}
+
+		printf("]\n");
+	}
 }
 
-static size_t segment_hash(const void* ptr_segment)
+static void print_vertex_data(Tetrapal* tetrapal)
 {
-	int a = ((int*)ptr_segment)[0];
-	int b = ((int*)ptr_segment)[1];
+	const size_t count = tetrapal->vertices.count;
+	const size_t capacity = tetrapal->vertices.capacity;
 
-	return (10079 * a * a + 20047 * b) ^ (10079 * b * b + 20047 * a);
+	printf("** PRINTING VERTEX DATA **\n");
+	printf("Count: %zu\n", count);
+	printf("Capacity: %zu\n", capacity);
+
+	for (size_t i = 0; i < count; i++)
+	{
+		printf("IDX: [%zu] COORDS: [ ", i);
+
+		for (local_t j = 0; j < tetrapal->dimensions; j++)
+		{
+			printf("%.5f ", (float)tetrapal->vertices.coordinates[i * tetrapal->dimensions + j]);
+		}
+
+		printf("]\n");
+	}
 }
 
-static int segment_compare_equal(const void* ptr_a, const void* ptr_b)
+static void print_memory(Tetrapal* tetrapal)
 {
-	int a1 = ((int*)ptr_a)[0];
-	int a2 = ((int*)ptr_a)[1];
+	printf("** PRINTING MEMORY DATA **\n");
 
-	int b1 = ((int*)ptr_b)[0];
-	int b2 = ((int*)ptr_b)[1];
+	size_t memory_struct = sizeof(*tetrapal);
 
-	return (a1 == b1 && a2 == b2) || (a1 == b2 && a2 == b1);
+	size_t memory_simplices =
+		sizeof(*tetrapal->simplices.adjacent_simplex) * tetrapal->simplices.capacity * simplex_size(tetrapal) +
+		sizeof(*tetrapal->simplices.incident_vertex) * tetrapal->simplices.capacity * simplex_size(tetrapal) +
+		sizeof(*tetrapal->simplices.flags) * tetrapal->simplices.capacity;
+
+	size_t memory_vertices =
+		sizeof(*tetrapal->vertices.coordinates) * tetrapal->vertices.count * tetrapal->dimensions +
+		sizeof(*tetrapal->vertices.incident_simplex) * tetrapal->vertices.count +
+		sizeof(*tetrapal->vertices.tree) * tetrapal->vertices.count;
+
+	size_t memory_total = memory_struct + memory_vertices + memory_simplices;
+
+	printf("MEMORY (STRUCT): %zu KB\n", memory_struct / 1000);
+	printf("MEMORY (VERTICES): %zu KB\n", memory_vertices / 1000);
+	printf("MEMORY (ADJACENCY): %zu KB\n", memory_simplices / 1000);
+	printf("TOTAL MEMORY: %zu KB\n", memory_total / 1000);
+}
+#endif
+
+/********************************/
+/*		3D Triangulation		*/
+/********************************/
+
+static error_t triangulate_3d(Tetrapal* tetrapal, vertex_t v[4], const float* points, const int size)
+{
+	/* Allocate memory. */
+	size_t estimated_num_elements = (size_t)size * 7;
+
+	tetrapal->vertices.capacity = size;
+	tetrapal->vertices.coordinates = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.coordinates) * size * 3);
+	tetrapal->vertices.incident_simplex = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.incident_simplex) * size);
+	tetrapal->vertices.tree = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.tree) * size);
+
+	tetrapal->simplices.capacity = estimated_num_elements;
+	tetrapal->simplices.deleted.capacity = size;
+	tetrapal->simplices.incident_vertex = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.incident_vertex) * estimated_num_elements * 4);
+	tetrapal->simplices.adjacent_simplex = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.adjacent_simplex) * estimated_num_elements * 4);
+	tetrapal->simplices.flags = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.flags) * estimated_num_elements);
+	tetrapal->simplices.deleted.simplices = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.deleted.simplices) * size);
+
+	/* Memory allocation failed? */
+	if (tetrapal->vertices.coordinates == NULL ||
+		tetrapal->vertices.incident_simplex == NULL ||
+		tetrapal->vertices.tree == NULL ||
+		tetrapal->simplices.incident_vertex == NULL ||
+		tetrapal->simplices.adjacent_simplex == NULL ||
+		tetrapal->simplices.flags == NULL ||
+		tetrapal->simplices.deleted.simplices == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Initialise secondary structures. */
+	if (stack_init(&tetrapal->stack, 32) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	if (cavity_init(&tetrapal->cavity, size) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	tetrapal->vertices.count = 0;
+	tetrapal->simplices.count = 0;
+	tetrapal->simplices.deleted.count = 0;
+
+	/* Add all points to the vertex array. */
+	for (int i = 0; i < size; i++)
+	{
+		coord_t tmp[3];
+		transform_3d(&points[i * 3], tmp);
+		new_vertex(tetrapal, tmp);
+	}
+
+	/* Inistialise and  build the KD Tree */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
+		tetrapal->vertices.tree[i] = i;
+
+	if (kdtree_balance(tetrapal, 0, (size_t)size - 1, 0) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Get the coordinates of the first simplex. */
+	const coord_t* p[4];
+
+	for (local_t i = 0; i < 4; i++)
+		p[i] = get_coordinates(tetrapal, v[i]);
+
+	/* Ensure positive orientation. */
+	if (orient_3d(p[0], p[1], p[2], p[3]) < 0)
+		swap_vertex(&v[0], &v[1]);
+
+	/* Create the first tetrahedron. */
+	simplex_t t = new_tetrahedron(tetrapal, v[0], v[1], v[2], v[3]);
+
+	if (t == SIMPLEX_NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Create the infinite tetrahedra. */
+	simplex_t inf[4];
+
+	for (local_t i = 0; i < 4; i++)
+	{
+		/* Get the facet indices opposite [t]'s vertex [i], enumerate backwards so that it is from pov of inf[i]. */
+		vertex_t a = get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][2]);
+		vertex_t b = get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][1]);
+		vertex_t c = get_incident_vertex(tetrapal, t, facet_opposite_vertex[i][0]);
+		inf[i] = new_tetrahedron(tetrapal, VERTEX_INFINITE, a, b, c);
+
+		if (inf[i] == SIMPLEX_NULL)
+			return ERROR_OUT_OF_MEMORY;
+
+		/* Set adjacencies across the finite tetrahedron. */
+		set_adjacent_simplex(tetrapal, t, inf[i], i);
+		set_adjacent_simplex(tetrapal, inf[i], t, 0);
+	}
+
+	/* Set adjacencies across infinite tetrahedra. */
+	for (local_t i = 0; i < 4; i++)
+	{
+		set_adjacent_simplex(tetrapal, inf[i], inf[facet_opposite_vertex[i][2]], 1);
+		set_adjacent_simplex(tetrapal, inf[i], inf[facet_opposite_vertex[i][1]], 2);
+		set_adjacent_simplex(tetrapal, inf[i], inf[facet_opposite_vertex[i][0]], 3);
+	}
+
+	/* Insert vertices one-by-one. */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
+	{
+		/* Ensure we don't re-insert a vertex from the starting simplex. */
+		if (i == v[0] || i == v[1] || i == v[2] || i == v[3])
+			continue;
+
+		if (insert_3d(tetrapal, i) != ERROR_NONE)
+			return ERROR_OUT_OF_MEMORY;
+	}
+
+	/* Set vertex-to-simplex incidence. */
+	for (t = 0; t < tetrapal->simplices.count; t++)
+	{
+		if (is_infinite_simplex(tetrapal, t))
+			continue;
+
+		for (local_t i = 0; i < 4; i++)
+		{
+			vertex_t vt = get_incident_vertex(tetrapal, t, i);
+			tetrapal->vertices.incident_simplex[vt] = t;
+		}
+	}
+
+	/* Free intermediate structures. */
+	TETRAPAL_FREE(tetrapal->simplices.deleted.simplices);
+	tetrapal->simplices.deleted.simplices = NULL;
+	stack_free(&tetrapal->stack);
+	cavity_free(&tetrapal->cavity);
+
+	return ERROR_NONE;
 }
 
-static void triangle_make_canonical(int* a, int* b, int* c)
+static error_t insert_3d(Tetrapal* tetrapal, vertex_t v)
 {
-	if (*a > *b) swap_int(a, b);
-	if (*b > *c) swap_int(b, c);
-	if (*a > *b) swap_int(a, b);
+	/* Add this point to the vertex array. */
+	const coord_t* p = get_coordinates(tetrapal, v);
+
+	/* Find the enclosing simplex of the input point. */
+	simplex_t t = locate_3d(tetrapal, p);
+
+	/* Check whether the input point is coincident with a vertex of the enclosing simplex.
+		We still leave the vertex in the structure for consistency, but we don't triangulate it. */
+	if (is_coincident_simplex(tetrapal, t, p) == true)
+		return ERROR_NONE;
+
+	/* Remove conflict simplices and triangulate the cavity. */
+	t = stellate_3d(tetrapal, v, t);
+
+	if (t == SIMPLEX_NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Success! */
+	return ERROR_NONE;
 }
 
-static size_t triangle_hash(const void* ptr_triangle)
+static simplex_t locate_3d(const Tetrapal* tetrapal, const coord_t point[3])
 {
-	int a = ((int*)ptr_triangle)[0];
-	int b = ((int*)ptr_triangle)[1];
-	int c = ((int*)ptr_triangle)[2];
+	/* Start from the last finite simplex. */
+	simplex_t t = tetrapal->simplices.last;
+	simplex_t t_prev = SIMPLEX_NULL; /* The simplex we just walked from. */
 
-	triangle_make_canonical(&a, &b, &c);
+	/* Local seed for rng. */
+	random_t seed = (random_t)t;
 
-	return (10079 * a * a + 20047 * b + c);
+	/* Walk the triangulation until an enclosing simplex is found. */
+WALK:
+	{
+		/* Check if we are at an infinite simplex. */
+		if (is_infinite_simplex(tetrapal, t))
+			return t;
+
+		/* Get the vertices of the current simplex. */
+		const vertex_t v[4] =
+		{
+			get_incident_vertex(tetrapal, t, 0),
+			get_incident_vertex(tetrapal, t, 1),
+			get_incident_vertex(tetrapal, t, 2),
+			get_incident_vertex(tetrapal, t, 3)
+		};
+
+		/* Get the coordinates of each vertex for the current simplex. */
+		const coord_t* p[4] =
+		{
+			get_coordinates(tetrapal, v[0]),
+			get_coordinates(tetrapal, v[1]),
+			get_coordinates(tetrapal, v[2]),
+			get_coordinates(tetrapal, v[3])
+		};
+
+		/* Start from a random facet (stochastic walk). */
+		const random_t r = random_range(&seed, 4);
+
+		/* Test the orientation against every facet until a negative one is found. */
+		for (int j = 0; j < 4; j++)
+		{
+			const local_t f = (local_t)(j + r) % 4;
+			const simplex_t ta = get_adjacent_simplex(tetrapal, t, f);
+
+			/* If we just came from this simplex, skip it. */
+			if (ta == t_prev)
+				continue;
+
+			const local_t a = facet_opposite_vertex[f][0];
+			const local_t b = facet_opposite_vertex[f][1];
+			const local_t c = facet_opposite_vertex[f][2];
+
+			/* If the orientation is negative, we should move towards the adjacent simplex. */
+			if (orient_3d(point, p[a], p[b], p[c]) < 0)
+			{
+				t_prev = t;
+				t = ta;
+				goto WALK;
+			}
+		}
+
+		return t;
+	}
 }
 
-static int triangle_compare_equal(const void* ptr_a, const void* ptr_b)
+static simplex_t stellate_3d(Tetrapal* tetrapal, vertex_t v, simplex_t t)
 {
-	int a1 = ((int*)ptr_a)[0];
-	int a2 = ((int*)ptr_a)[1];
-	int a3 = ((int*)ptr_a)[2];
+	TETRAPAL_ASSERT(is_enclosing_simplex(tetrapal, t, get_coordinates(tetrapal, v)) == true, "Starting simplex does not enclose the point!\n");
 
-	int b1 = ((int*)ptr_b)[0];
-	int b2 = ((int*)ptr_b)[1];
-	int b3 = ((int*)ptr_b)[2];
+	/* Reset the cavity struct. */
+	Cavity* cavity = &tetrapal->cavity;
+	cavity_clear(cavity);
 
-	triangle_make_canonical(&a1, &a2, &a3);
-	triangle_make_canonical(&b1, &b2, &b3);
+	/* Insert the first conflict simplex [t] into the stack. */
+	Stack* stack = &tetrapal->stack;
+	stack_clear(stack);
 
-	return (a1 == b1 && a2 == b2 && a3 == b3);
+	if (stack_insert(stack, t) != ERROR_NONE)
+		return SIMPLEX_NULL;
+
+	/* Mark the first simplex as free, since we know it should already be in conflict. */
+	if (free_simplex(tetrapal, t) != ERROR_NONE)
+		return SIMPLEX_NULL;
+
+	/* Get the coordinates of the vertex. */
+	const coord_t* p = get_coordinates(tetrapal, v);
+
+	/* Perform depth-search traversal of conflict zone until there are no more simplices to check.*/
+	while (stack_is_empty(stack) == false)
+	{
+		/* Get and pop the simplex at the top of the stack. */
+		t = stack_top(stack);
+		stack_pop(stack);
+
+		/* Check every adjacent tetrahedron for conflict. */
+		for (local_t i = 0; i < 4; i++)
+		{
+			simplex_t adj = get_adjacent_simplex(tetrapal, t, i);
+
+			/* If the simplex is free, then it has already been processed. */
+			if (is_free_simplex(tetrapal, adj) == true)
+				continue;
+
+			/* If it is in conflict, free the simplex and add it to the stack. */
+			if (conflict_3d(tetrapal, adj, p) == true)
+			{
+				if (stack_insert(stack, adj) != ERROR_NONE)
+					return SIMPLEX_NULL;
+
+				if (free_simplex(tetrapal, adj) != ERROR_NONE)
+					return SIMPLEX_NULL;
+
+				continue;
+			}
+
+			/* It is not in conflict, so add the shared facet to the cavity. */
+			const local_t a = facet_opposite_vertex[i][0];
+			const local_t b = facet_opposite_vertex[i][1];
+			const local_t c = facet_opposite_vertex[i][2];
+
+			/* Facet vertices are given in positive orientation wrt the inside of the cavity. */
+			const vertex_t vf[3] =
+			{
+				get_incident_vertex(tetrapal, t, a),
+				get_incident_vertex(tetrapal, t, b),
+				get_incident_vertex(tetrapal, t, c)
+			};
+
+			if (cavity_insert(cavity, vf[0], vf[1], vf[2], adj, find_adjacent(tetrapal, adj, t)) == FACET_NULL)
+				return SIMPLEX_NULL;
+		}
+	}
+
+	/* Now stellate (triangulate) the cavity by connecting every facet to [v]. */
+	for (facet_t f = 0; (size_t)f < cavity->facets.count; f++)
+	{
+		/* Facet vertices are in positive orientation wrt [v]. */
+		const vertex_t vf[3] =
+		{
+			cavity_get_incident_vertex(cavity, f, 0),
+			cavity_get_incident_vertex(cavity, f, 1),
+			cavity_get_incident_vertex(cavity, f, 2)
+		};
+
+		/* Create a new simplex from the facet. */
+		t = new_tetrahedron(tetrapal, v, vf[0], vf[1], vf[2]);
+
+		/* Check if we failed to create a new simplex. */
+		if (t == SIMPLEX_NULL)
+			return SIMPLEX_NULL;
+
+		/* Connect the new simplex to the boundary simplex. */
+		const simplex_t adj = cavity_get_adjacent_simplex(cavity, f);
+		set_adjacent_simplex(tetrapal, t, adj, 0);
+		set_adjacent_simplex(tetrapal, adj, t, cavity_get_adjacent_simplex_facet(cavity, f));
+
+		/* Update the facet's adjacent simplex such that it now represents the new cavity simplex. */
+		cavity_set_adjacent_simplex(cavity, f, t);
+	}
+
+	/* Repair adjacency relationships across the new simplices. */
+	for (facet_t f = 0; (size_t)f < cavity->facets.count; f++)
+	{
+		/* Get the cavity simplex associated with this facet. */
+		t = cavity_get_adjacent_simplex(cavity, f);
+
+		/* Get the facet's incident vertices. */
+		const vertex_t vf[3] =
+		{
+			cavity_get_incident_vertex(cavity, f, 0),
+			cavity_get_incident_vertex(cavity, f, 1),
+			cavity_get_incident_vertex(cavity, f, 2)
+		};
+
+		/* Get the facets neighbouring each edge. */
+		const facet_t fa[3] =
+		{
+			cavity_find(cavity, vf[1], vf[0]),
+			cavity_find(cavity, vf[2], vf[1]),
+			cavity_find(cavity, vf[0], vf[2])
+		};
+
+		/* Get the simplices adjacent to each neighbouring facet. */
+		const simplex_t ta[3] =
+		{
+			cavity_get_adjacent_simplex(cavity, fa[0]),
+			cavity_get_adjacent_simplex(cavity, fa[1]),
+			cavity_get_adjacent_simplex(cavity, fa[2])
+		};
+
+		/* Link the current simplex to each neighbouring simplex. */
+		set_adjacent_simplex(tetrapal, t, ta[0], 3);
+		set_adjacent_simplex(tetrapal, t, ta[1], 1);
+		set_adjacent_simplex(tetrapal, t, ta[2], 2);
+	}
+
+	return t;
 }
 
-static void tetrahedron_make_canonical(int* a, int* b, int* c, int *d)
+static bool conflict_3d(const Tetrapal* tetrapal, simplex_t t, const coord_t point[3])
 {
-	if (*a > *b) swap_int(a, b);
-	if (*c > *d) swap_int(c, d);
-	if (*a > *c) swap_int(a, c);
-	if (*b > *d) swap_int(b, d);
-	if (*b > *c) swap_int(b, c);
+	TETRAPAL_ASSERT(t < tetrapal->simplices.count + tetrapal->simplices.deleted.count, "Simplex index out of range!");
+
+	/* Get the coordinates of each vertex for the current simplex. */
+	const coord_t* p[4];
+
+	for (local_t i = 0; i < 4; i++)
+	{
+		const vertex_t v = get_incident_vertex(tetrapal, t, i);
+
+		/* We represent the coordinates of an infinite vertex as a NULL pointer. This idea is borrowed from Geogram. */
+		p[i] = (v == VERTEX_INFINITE) ? NULL : get_coordinates(tetrapal, v);
+	}
+
+	/* The rules on testing the conflict zone for finite and infinite simplices are slightly different.
+		For finite simplices, we can do a simple insphere/incircle test as normal.
+		For infinite simplices, we must perform an orientation test on the finite facet.
+		If the point lies on the inner side of the plane defined by the finite facet, then it is in conflict.
+		If the point is directly on the plane however, we must do another test to check whether it is on the facet's circumcircle (i.e. in conflict). */
+
+		/* Look for the infinite vertex if there is one. */
+	for (local_t i = 0; i < 4; i++)
+	{
+		/* Ignore finite vertices. */
+		if (p[i] != NULL)
+			continue;
+
+		const local_t a = facet_opposite_vertex[i][0];
+		const local_t b = facet_opposite_vertex[i][1];
+		const local_t c = facet_opposite_vertex[i][2];
+
+		/* Get the orientation wrt the finite facet.*/
+		const coord_t orientation = orient_3d(point, p[a], p[b], p[c]);
+
+		/* If the orientation is positive, then this simplex is in conflict. If negative, then it is not. */
+		if (orientation > 0)
+			return true;
+
+		if (orientation < 0)
+			return false;
+
+		/* If the orientation is exactly 0, then we need to check whether it lies on the facet's circumcircle.
+			This is equivalent to checking whether the adjacent finite simplex is in conflict with the point. */
+		const simplex_t adj = get_adjacent_simplex(tetrapal, t, i);
+		TETRAPAL_ASSERT(is_infinite_simplex(tetrapal, adj) == false, "Adjacent simplex to infinite vertex should be finite!");
+
+		/* Because we stellate depth-first, the simplex would have already been freed if it was in conflict.
+			This saves us an insphere/incircle test. */
+		if (is_free_simplex(tetrapal, adj))
+			return true;
+		else
+			return (conflict_3d(tetrapal, adj, point));
+	}
+
+	/* The simplex is finite, so we do a regular insphere/incircle test. */
+	if (insphere_3d(p[0], p[1], p[2], p[3], point) > 0)
+		return true;
+	else
+		return false;
 }
 
-static size_t tetrahedron_hash(const void* ptr_tetrahedron)
+static size_t interpolate_3d(const Tetrapal* tetrapal, const coord_t point[3], int indices[4], float weights[4], simplex_t* t)
 {
-	int a = ((int*)ptr_tetrahedron)[0];
-	int b = ((int*)ptr_tetrahedron)[1];
-	int c = ((int*)ptr_tetrahedron)[2];
-	int d = ((int*)ptr_tetrahedron)[3];
+	vertex_t v[4]; /* Current simplex vertex indices. */
+	const coord_t* p[4]; /* Current simplex vertex coordinates. */
+	coord_t orient[4]; /* Orientation for each face. */
+	simplex_t t_prev = SIMPLEX_NULL; /* The simplex we just walked from. */
 
-	tetrahedron_make_canonical(&a, &b, &c, &d);
+	/* Find an appropriate starting simplex. */
+	v[0] = kdtree_get_vertex(tetrapal, kdtree_find_approximate(tetrapal, point));
+	*t = get_incident_simplex(tetrapal, v[0]);
+	random_t seed = (random_t)*t; /* Local seed for rng. */
 
-	return (10079 * a * a * a + 20047 * b * b + 12619 * c + d);
-}
+	/* Walk the triangulation until an enclosing simplex is found. */
+WALK_START:
+	{
+		/* Check if we are at an infinite simplex. */
+		if (is_infinite_simplex(tetrapal, *t))
+			goto WALK_FACET;
 
-static int tetrahedron_compare_equal(const void* ptr_a, const void* ptr_b)
-{
-	int a1 = ((int*)ptr_a)[0];
-	int a2 = ((int*)ptr_a)[1];
-	int a3 = ((int*)ptr_a)[2];
-	int a4 = ((int*)ptr_a)[3];
+		/* Get the vertex data for the current simplex. */
+		for (local_t i = 0; i < 4; i++)
+		{
+			v[i] = get_incident_vertex(tetrapal, *t, i);
+			p[i] = get_coordinates(tetrapal, v[i]);
+		}
 
-	int b1 = ((int*)ptr_b)[0];
-	int b2 = ((int*)ptr_b)[1];
-	int b3 = ((int*)ptr_b)[2];
-	int b4 = ((int*)ptr_b)[3];
+		/* Start from a random facet (stochastic walk). */
+		const random_t r = random_range(&seed, 4);
 
-	tetrahedron_make_canonical(&a1, &a2, &a3, &a4);
-	tetrahedron_make_canonical(&b1, &b2, &b3, &b4);
+		/* Test the orientation against every facet until a negative one is found. */
+		for (int i = 0; i < 4; i++)
+		{
+			local_t f = (local_t)(i + r) % 4;
+			local_t a = facet_opposite_vertex[f][0];
+			local_t b = facet_opposite_vertex[f][1];
+			local_t c = facet_opposite_vertex[f][2];
+			simplex_t adj = get_adjacent_simplex(tetrapal, *t, f);
 
-	return (a1 == b1 && a2 == b2 && a3 == b3 && a4 == b4);
-}
+			/* Get the orientation. */
+			orient[f] = orient_3d(point, p[a], p[b], p[c]);
 
-// ===============================================================
-//		Interpolation
-// ===============================================================	
+			/* If the orientation is negative, move towards the adjacent simplex. */
+			if (orient[f] < 0 && adj != t_prev)
+			{
+				t_prev = *t;
+				*t = adj;
+				goto WALK_START;
+			}
+		}
 
-static int interpolate_3d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, int* d, double* u, double* v, double* w, double* x)
-{
-	int64_t pa[3], pb[3], pc[3], pd[3];
-	uint32_t random_state = 1;
+		/* This is the enclosing simplex. Calculate barycentric weights from the orientation results. */
+		const float total = (float)(orient[0] + orient[1] + orient[2] + orient[3]);
+		const float inverse = 1.0f / total;
 
-	spatialgrid_locate(tetrapal, p, a, b, c, d);
+		indices[0] = v[0];
+		indices[1] = v[1];
+		indices[2] = v[2];
+		indices[3] = v[3];
+		weights[0] = orient[0] * inverse;
+		weights[1] = orient[1] * inverse;
+		weights[2] = orient[2] * inverse;
+		weights[3] = 1.0f - (weights[0] + weights[1] + weights[2]);
 
-	//*a = tetrapal->last[0];
-	//*b = tetrapal->last[1];
-	//*c = tetrapal->last[2];
-	//*d = tetrapal->last[3];
-
-	// Start walking from within the triangulation
-	while (1) {
-
-		// If we arrive at an infinite tetrahedron, we must perform a convex hull walk
-		if (is_infinite_tetrahedron(*a, *b, *c, *d))
-			goto WALK_FACE;
-
-		// Randomly rotate indices (stochastic walk)
-		rotate_tetrahedron(a, b, c, d, random_range_int(&random_state, 4));
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, *c, pc);
-		get_coordinates(tetrapal, *d, pd);
-
-		// Test the query point against every face
-		if (orient3d_fast(pa, pb, pc, p) < 0) { *d = adjacent_tetrahedron(tetrapal, *c, *b, *a); swap_int(a, c); continue; }
-		if (orient3d_fast(pa, pc, pd, p) < 0) { *b = adjacent_tetrahedron(tetrapal, *d, *c, *a); swap_int(b, d); continue; }
-		if (orient3d_fast(pa, pd, pb, p) < 0) { *c = adjacent_tetrahedron(tetrapal, *b, *d, *a); swap_int(c, d); continue; }
-		if (orient3d_fast(pb, pd, pc, p) < 0) { *a = adjacent_tetrahedron(tetrapal, *c, *d, *b); swap_int(a, d); continue; }
-
-		// If none of the faces return negative, then we have found the enclosing tetrahedron
-		barycentric_3d(p, pa, pb, pc, pd, u, v, w, x);
 		return 4;
 	}
 
-WALK_FACE:
-	while (1)
+	coord_t n[3]; /* Normal for the current facet. */
+
+WALK_FACET:
 	{
-		// Randomly rotate indices (stochastic walk)
-		rotate_triangle(a, b, c, random_range_int(&random_state, 3));
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, *c, pc);
+		/* Get the vertex data. */
+		const local_t f = find_vertex(tetrapal, *t, VERTEX_INFINITE);
+		get_facet_normal(tetrapal, *t, f, n);
 
-		// Check if the point lies in an incident edge region
-		if (orient2d_fast(pa, pb, p, pa, pb, pc) < 0) { goto WALK_EDGE; }
-		if (orient2d_fast(pb, pc, p, pb, pc, pa) < 0) { *a = *b; *b = *c; goto WALK_EDGE; }
-		if (orient2d_fast(pc, pa, p, pc, pa, pb) < 0) { *b = *a; *a = *c; goto WALK_EDGE; }
+		for (local_t i = 0; i < 3; i++)
+		{
+			v[i] = get_incident_vertex(tetrapal, *t, facet_opposite_vertex[f][i]);
+			p[i] = get_coordinates(tetrapal, v[i]);
+		}
 
-		// Point lies within this region
-		barycentric_2d(p, pa, pb, pc, u, v, w);
+		/* Start from a random edge (stochastic walk). */
+		const random_t r = random_range(&seed, 3);
+
+		/* Test the orientation against every edge until a negative one is found. */
+		for (int i = 0; i < 3; i++)
+		{
+			const local_t c = (local_t)(i + r) % 3;
+			const local_t a = edge_opposite_vertex[c][0];
+			const local_t b = edge_opposite_vertex[c][1];
+			const simplex_t ta = get_adjacent_simplex(tetrapal, *t, facet_opposite_vertex[f][c]);
+
+			/* Get the orientation. */
+			coord_t ab[3], ap[3], abp[3];
+			sub_3d(p[b], p[a], ab);
+			sub_3d(point, p[a], ap);
+			cross_3d(ab, ap, abp);
+			orient[c] = dot_3d(abp, n);
+
+			/* If the orientation is negative, test the edge. */
+			if (orient[c] < 0 && ta != t_prev)
+			{
+				/* Test the vertex regions. */
+				orient[b] = dot_3d(ab, ap);
+
+				/* If negative, jump to vertex region [a]. */
+				if (orient[b] < 0)
+				{
+					v[0] = v[a];
+					p[0] = p[a];
+					goto WALK_VERTEX;
+				}
+
+				const coord_t total = dot_3d(ab, ab);
+				orient[a] = total - orient[b];
+
+				/* If negative, jump to vertex region [b]. */
+				if (orient[a] < 0)
+				{
+					v[0] = v[b];
+					p[0] = p[b];
+					goto WALK_VERTEX;
+				}
+
+				/* Test the adjacent facet. */
+				get_facet_normal(tetrapal, ta, find_vertex(tetrapal, ta, VERTEX_INFINITE), n);
+				orient[c] = dot_3d(abp, n);
+
+				/* If the orientation is negative, jump to this facet. */
+				if (orient[c] < 0)
+				{
+					t_prev = *t;
+					*t = ta;
+					goto WALK_FACET;
+				}
+
+				/* Otherwise, point lies within this region. */
+				*t = get_adjacent_simplex(tetrapal, *t, f);
+				indices[0] = v[a];
+				indices[1] = v[b];
+				weights[0] = orient[a] / total;
+				weights[1] = 1.0f - weights[0];
+
+				return 2;
+			}
+		}
+
+		/* This is the enclosing facet. Calculate barycentric weights from the orientation results. */
+		const float total = (float)(orient[0] + orient[1] + orient[2]);
+		const float inverse = 1.0f / total;
+
+		indices[0] = v[0];
+		indices[1] = v[1];
+		indices[2] = v[2];
+		weights[0] = orient[0] * inverse;
+		weights[1] = orient[1] * inverse;
+		weights[2] = 1.0f - (weights[0] + weights[1]);
+
 		return 3;
-	}
-
-WALK_EDGE:
-	while (1)
-	{
-		int j, k;
-		j = adjacent_tetrahedron(tetrapal, *a, *b, VERTEX_INFINITE);
-		k = adjacent_tetrahedron(tetrapal, *b, *a, VERTEX_INFINITE);
-
-		int64_t pa[3], pb[3], pj[3], pk[3];
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, j, pj);
-		get_coordinates(tetrapal, k, pk);
-
-		// Check if point lies in an incident vertex region
-		if (orient1d_fast(pa, pb, p) < 0) { goto WALK_VERTEX; }
-		if (orient1d_fast(pb, pa, p) < 0) { *a = *b; goto WALK_VERTEX; }
-
-		// Check if point lies in an incident face region
-		if (orient2d_fast(pa, pb, p, pb, pa, pj) < 0) { swap_int(a, b); *c = j; goto WALK_FACE; }
-		if (orient2d_fast(pb, pa, p, pa, pb, pk) < 0) { *c = k; goto WALK_FACE; }
-
-		// Point lies within this region
-		barycentric_1d(p, pa, pb, u, v);
-		return 2;
 	}
 
 WALK_VERTEX:
-	while (1)
 	{
-		// Get all the hull edges connected to this vertex and check if the orthogonal projection of [p] lies on any of these edges
-		for (size_t i = 0; i < graph_list_size(tetrapal->graph, *a); i++) {
+		/* Rotate around the vertex. */
+		simplex_t t_first = *t;
+		local_t f;
 
-			*b = graph_get(tetrapal->graph, *a, i);
+		do
+		{
+			/* Find the pivot and the current edge. */
+			f = find_vertex(tetrapal, *t, VERTEX_INFINITE);
+			local_t a = find_vertex(tetrapal, *t, v[0]);
+			local_t b = facet_from_edge[f][a];
 
-			// Only check vertices that lie on the convex hull
-			if (adjacent_tetrahedron(tetrapal, *a, *b, VERTEX_INFINITE) == VERTEX_NULL)
-				continue;
+			/* Get vertex info. */
+			v[1] = get_incident_vertex(tetrapal, *t, b);
+			p[1] = get_coordinates(tetrapal, v[1]);
 
-			int64_t pa[3], pb[3];
-			get_coordinates(tetrapal, *a, pa);
-			get_coordinates(tetrapal, *b, pb);
+			/* Test the edge region. */
+			coord_t ab[3], ap[3];
+			sub_3d(p[1], p[0], ab);
+			sub_3d(point, p[0], ap);
+			coord_t wb = dot_3d(ab, ap);
 
-			// Check if point lies in an incident edge region
-			if (orient1d_fast(pa, pb, p) > 0) { goto WALK_EDGE; }
-		}
+			/* If positive, jump to this edge region. */
+			if (wb > 0)
+			{
+				/* Test the other vertex region. */
+				coord_t total = dot_3d(ab, ab);
+				coord_t wa = total - wb;
 
-		// Point lies within this region
-		*u = 1.0;
+				/* If negative, jump to vertex region [b]. */
+				if (wa < 0)
+				{
+					v[0] = v[1];
+					p[0] = p[1];
+					goto WALK_VERTEX;
+				}
+
+				/* Test the current facet. */
+				coord_t abp[3];
+				cross_3d(ab, ap, abp);
+				get_facet_normal(tetrapal, *t, f, n);
+				orient[0] = dot_3d(abp, n);
+
+				/* If the orientation is positive, jump to this facet. */
+				if (orient[0] > 0)
+				{
+					goto WALK_FACET;
+				}
+
+				/* Test adjacent facet. */
+				simplex_t ta = get_adjacent_simplex(tetrapal, *t, facet_from_edge[a][f]);
+				get_facet_normal(tetrapal, ta, find_vertex(tetrapal, ta, VERTEX_INFINITE), n);
+				orient[0] = dot_3d(abp, n);
+
+				/* If the orientation is negative, jump to this facet. */
+				if (orient[0] < 0)
+				{
+					/* We already tested the current facet, so set it as the previous. */
+					t_prev = *t;
+					*t = ta;
+					goto WALK_FACET;
+				}
+
+				/* Point lies within this edge region. */
+				indices[0] = v[0];
+				indices[1] = v[1];
+				weights[0] = wa / total;
+				weights[1] = 1.0f - weights[0];
+
+				return 2;
+			}
+
+			/* Otherwise continue rotating. */
+			*t = get_adjacent_simplex(tetrapal, *t, b);
+
+		} while (*t != t_first);
+
+		/* Point lies within this vertex region. */
+		*t = get_adjacent_simplex(tetrapal, *t, f);
+		indices[0] = v[0];
+		weights[0] = 1.0f;
+
 		return 1;
 	}
 }
 
-static int interpolate_2d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, int* c, double* u, double* v, double* w)
+static vertex_t nearest_3d(const Tetrapal* tetrapal, const coord_t point[3])
 {
-	int64_t pa[3], pb[3], pc[3];
-	uint32_t random_state = 1;
+	vertex_t v[4]; /* Current simplex vertex indices. */
+	const coord_t* p[4]; /* Current simplex vertex coordinates. */
+	coord_t orient[4]; /* Orientation for each face. */
+	simplex_t t[3]; /* Simplex indices. */
 
-	int null;
-	spatialgrid_locate(tetrapal, p, a, b, c, &null);
+	/* Find an appropriate starting simplex. */
+	v[0] = kdtree_get_vertex(tetrapal, kdtree_find_approximate(tetrapal, point));
+	t[0] = get_incident_simplex(tetrapal, v[0]);
+	random_t seed = (random_t)t[0]; /* Local seed for rng. */
 
-	//*a = tetrapal->last[0];
-	//*b = tetrapal->last[1];
-	//*c = tetrapal->last[2];
+	/* The previously visited simplex. */
+	t[2] = SIMPLEX_NULL;
 
-	// Walk as normal, but use the fast predicates (numerical stability is not that important)
-	while (1)
+	/* Walk the triangulation until an enclosing simplex is found. */
+WALK_START:
 	{
-		// If we arrive at an infinite triangle, then our point lies outside the current triangulation
-		if (is_infinite_triangle(*a, *b, *c))
+		/* Check if we are at an infinite simplex. */
+		if (is_infinite_simplex(tetrapal, t[0]))
 		{
-			break;
+			/* Set an arbitrary finite vertex as the starting hull vertex. */
+			local_t f = find_vertex(tetrapal, t[0], VERTEX_INFINITE);
+
+			v[0] = get_incident_vertex(tetrapal, t[0], facet_from_edge[f][0]);
+			p[0] = get_coordinates(tetrapal, v[0]);
+
+			goto WALK_HULL;
 		}
 
-		// Randomly rotate indices (stochastic walk)
-		rotate_triangle(a, b, c, random_range_int(&random_state, 3));
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, *c, pc);
+		/* Get the vertex data for the current simplex. */
+		for (local_t i = 0; i < 4; i++)
+		{
+			v[i] = get_incident_vertex(tetrapal, t[0], i);
+			p[i] = get_coordinates(tetrapal, v[i]);
+		}
 
-		// Test the query point against every face
-		if (orient2d_fast(pa, pb, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *c = adjacent_triangle(tetrapal, *b, *a); swap_int(a, b); continue; }
-		if (orient2d_fast(pb, pc, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *a = adjacent_triangle(tetrapal, *c, *b); swap_int(c, a); continue; }
-		if (orient2d_fast(pc, pa, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *b = adjacent_triangle(tetrapal, *a, *c); swap_int(c, b); continue; }
+		/* Start from a random facet (stochastic walk). */
+		const random_t r = random_range(&seed, 4);
 
-		// If none of the faces return negative, then we have found the enclosing triangle
-		barycentric_2d(p, pa, pb, pc, u, v, w);
+		/* Test the orientation against every facet until a negative one is found. */
+		for (local_t i = 0; i < 4; i++)
+		{
+			local_t f = (local_t)(i + r) % 4;
+			local_t a = facet_opposite_vertex[f][0];
+			local_t b = facet_opposite_vertex[f][1];
+			local_t c = facet_opposite_vertex[f][2];
+			t[1] = get_adjacent_simplex(tetrapal, t[0], f);
+
+			/* Get the orientation. */
+			orient[f] = orient_3d(point, p[a], p[b], p[c]);
+
+			/* If the orientation is negative, move towards the adjacent simplex. */
+			if (orient[f] < 0 && t[1] != t[2])
+			{
+				t[2] = t[0];
+				t[0] = t[1];
+				goto WALK_START;
+			}
+		}
+
+		/* This is the enclosing simplex. Find the closest vertex. */
+		local_t i[4] = { 0, 1, 2, 3 };
+		if (orient[i[0]] < orient[i[1]]) swap_local(&i[0], &i[1]);
+		if (orient[i[2]] < orient[i[3]]) swap_local(&i[2], &i[3]);
+		if (orient[i[0]] < orient[i[2]]) swap_local(&i[0], &i[2]);
+		return v[i[0]];
+	}
+
+	/* Rotate around the vertex, testing the distance to every other vertex. */
+	/* v[0] is the vertex we're rotating around. */
+WALK_HULL:
+	{
+		/* Get the distance to v[0]. */
+		coord_t distance_a = distance_squared_3d(point, p[0]);
+		t[2] = t[0]; /* Record the simplex we started from. */
+
+		do
+		{
+			/* Find the pivot and the current edge. */
+			local_t f = find_vertex(tetrapal, t[0], VERTEX_INFINITE);
+			local_t a = find_vertex(tetrapal, t[0], v[0]); /* Current vertex. */
+			local_t b = facet_from_edge[f][a]; /* The vertex we're testing. */
+
+			/* Get vertex info. */
+			v[1] = get_incident_vertex(tetrapal, t[0], b);
+			p[1] = get_coordinates(tetrapal, v[1]);
+
+			/* Test the distance to this vertex */
+			coord_t distance_b = distance_squared_3d(point, p[1]);
+
+			/* If this vertex is closer, jump to it and rotate again. */
+			if (distance_b < distance_a)
+			{
+				v[0] = v[1];
+				p[0] = p[1];
+				goto WALK_HULL;
+			}
+
+			/* Otherwise continue rotating. */
+			t[0] = get_adjacent_simplex(tetrapal, t[0], b);
+
+		} while (t[0] != t[2]);
+
+		/* Point is closest to this vertex. */
+		return v[0];
+	}
+}
+
+static inline void transform_3d(const float in[3], coord_t out[3])
+{
+	float clamped[3] =
+	{
+		in[0] > 1.0f ? 1.0f : (in[0] < 0.0f ? 0.0f : in[0]),
+		in[1] > 1.0f ? 1.0f : (in[1] < 0.0f ? 0.0f : in[1]),
+		in[2] > 1.0f ? 1.0f : (in[2] < 0.0f ? 0.0f : in[2]),
+	};
+
+	out[0] = (coord_t)roundf(clamped[0] * TETRAPAL_PRECISION);
+	out[1] = (coord_t)roundf(clamped[1] * TETRAPAL_PRECISION);
+	out[2] = (coord_t)roundf(clamped[2] * TETRAPAL_PRECISION);
+}
+
+static simplex_t new_tetrahedron(Tetrapal* tetrapal, vertex_t a, vertex_t b, vertex_t c, vertex_t d)
+{
+	simplex_t t = SIMPLEX_NULL;
+
+	/* Check if there are any free simplices. */
+	const size_t num_deleted = tetrapal->simplices.deleted.count;
+
+	if (num_deleted > 0)
+	{
+		t = tetrapal->simplices.deleted.simplices[num_deleted - 1];
+		tetrapal->simplices.deleted.count -= 1;
+	}
+	else /* No free simplices; add a new index. */
+	{
+		const error_t error = check_simplices_capacity(tetrapal);
+
+		/* Could not reallocate the simplex array. */
+		if (error)
+			return SIMPLEX_NULL;
+
+		t = (simplex_t)tetrapal->simplices.count;
+	}
+
+	/* Set vertex incidence. */
+	tetrapal->simplices.incident_vertex[t * 4 + 0] = a;
+	tetrapal->simplices.incident_vertex[t * 4 + 1] = b;
+	tetrapal->simplices.incident_vertex[t * 4 + 2] = c;
+	tetrapal->simplices.incident_vertex[t * 4 + 3] = d;
+	tetrapal->simplices.flags[t].all = false;
+
+	/* Is it an infinite simplex? */
+	if (a == VERTEX_INFINITE ||
+		b == VERTEX_INFINITE ||
+		c == VERTEX_INFINITE ||
+		d == VERTEX_INFINITE)
+	{
+		tetrapal->simplices.flags[t].bit.is_infinite = true;
+	}
+	else
+	{
+		tetrapal->simplices.flags[t].bit.is_infinite = false;
+		tetrapal->simplices.last = t;
+	}
+
+#ifdef TETRAPAL_DEBUG
+	/* Set adjacencies to null. */
+	tetrapal->simplices.adjacent_simplex[t * 4 + 0] = SIMPLEX_NULL;
+	tetrapal->simplices.adjacent_simplex[t * 4 + 1] = SIMPLEX_NULL;
+	tetrapal->simplices.adjacent_simplex[t * 4 + 2] = SIMPLEX_NULL;
+	tetrapal->simplices.adjacent_simplex[t * 4 + 3] = SIMPLEX_NULL;
+#endif
+
+	tetrapal->simplices.count += 1;
+
+	return t;
+}
+
+/********************************/
+/*		2D Triangulation		*/
+/********************************/
+
+static error_t triangulate_2d(Tetrapal* tetrapal, vertex_t v[3], const float* points, const int size)
+{
+	/* Allocate memory. */
+	size_t estimated_num_elements = (size_t)size * 2;
+
+	tetrapal->vertices.capacity = size;
+	tetrapal->vertices.coordinates = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.coordinates) * size * 2);
+	tetrapal->vertices.incident_simplex = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.incident_simplex) * size);
+	tetrapal->vertices.tree = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.tree) * size);
+
+	tetrapal->simplices.capacity = estimated_num_elements;
+	tetrapal->simplices.deleted.capacity = size;
+	tetrapal->simplices.incident_vertex = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.incident_vertex) * estimated_num_elements * 3);
+	tetrapal->simplices.adjacent_simplex = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.adjacent_simplex) * estimated_num_elements * 3);
+	tetrapal->simplices.flags = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.flags) * estimated_num_elements);
+	tetrapal->simplices.deleted.simplices = TETRAPAL_MALLOC(sizeof(*tetrapal->simplices.deleted.simplices) * size);
+
+	/* Memory allocation failed? */
+	if (tetrapal->vertices.coordinates == NULL ||
+		tetrapal->vertices.incident_simplex == NULL ||
+		tetrapal->vertices.tree == NULL ||
+		tetrapal->simplices.incident_vertex == NULL ||
+		tetrapal->simplices.adjacent_simplex == NULL ||
+		tetrapal->simplices.flags == NULL ||
+		tetrapal->simplices.deleted.simplices == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Initialise secondary structures. */
+	if (stack_init(&tetrapal->stack, 32) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	tetrapal->vertices.count = 0;
+	tetrapal->simplices.count = 0;
+	tetrapal->simplices.deleted.count = 0;
+
+	/* Get the coords of the first simplex in 3D space. */
+	const coord_t* p[3] =
+	{
+		&points[0 * 3],
+		&points[1 * 3],
+		&points[2 * 3]
+	};
+
+	/* Create the 3D basis vectors defining the coordinate system for the 2D triangulation. */
+	coord_t x[3], y[3], up[3];
+	sub_3d(p[1], p[0], x);
+	sub_3d(p[2], p[0], y);
+	cross_3d(x, y, up);
+	cross_3d(x, up, y);
+
+	/* Normalise the basis vectors with respect to the unit cube. */
+	normalise_3d(x, x);
+	normalise_3d(y, y);
+	mul_3d(x, 1.0f / sqrtf(3.0f), tetrapal->vertices.basis[0]);
+	mul_3d(y, 1.0f / sqrtf(3.0f), tetrapal->vertices.basis[1]);
+
+	/* Add all points to the vertex array, converting coords to 2D space. */
+	for (int i = 0; i < size; i++)
+	{
+		coord_t tmp[2];
+		transform_2d(tetrapal, &points[i * 3], tmp);
+		new_vertex(tetrapal, tmp);
+	}
+
+	/* Inistialise and  build the KD Tree */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
+		tetrapal->vertices.tree[i] = i;
+
+	if (kdtree_balance(tetrapal, 0, (size_t)size - 1, 0) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Get the coordinates of the first simplex. */
+	for (local_t i = 0; i < 3; i++)
+		p[i] = get_coordinates(tetrapal, v[i]);
+
+	/* Ensure positive orientation. */
+	if (orient_2d(p[0], p[1], p[2]) < 0)
+		swap_vertex(&v[0], &v[1]);
+
+	/* Create the first triangle. */
+	simplex_t t = new_triangle(tetrapal, v[0], v[1], v[2]);
+
+	if (t == SIMPLEX_NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Create the infinite triangles. */
+	simplex_t inf[3];
+
+	for (local_t i = 0; i < 3; i++)
+	{
+		/* Get the edge indices opposite [t]'s vertex [i], enumerate backwards so that it is from pov of inf[i]. */
+		vertex_t a = get_incident_vertex(tetrapal, t, edge_opposite_vertex[i][1]);
+		vertex_t b = get_incident_vertex(tetrapal, t, edge_opposite_vertex[i][0]);
+		inf[i] = new_triangle(tetrapal, VERTEX_INFINITE, a, b);
+
+		if (inf[i] == SIMPLEX_NULL)
+			return ERROR_OUT_OF_MEMORY;
+
+		/* Set adjacencies across the finite triangle. */
+		set_adjacent_simplex(tetrapal, t, inf[i], i);
+		set_adjacent_simplex(tetrapal, inf[i], t, 0);
+	}
+
+	/* Set adjacencies across infinite triangles. */
+	for (local_t i = 0; i < 3; i++)
+	{
+		set_adjacent_simplex(tetrapal, inf[i], inf[edge_opposite_vertex[i][1]], 1);
+		set_adjacent_simplex(tetrapal, inf[i], inf[edge_opposite_vertex[i][0]], 2);
+	}
+
+	/* Insert vertices one-by-one. */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
+	{
+		/* Ensure we don't re-insert a vertex from the starting simplex. */
+		if (i == v[0] || i == v[1] || i == v[2])
+			continue;
+
+		if (insert_2d(tetrapal, i) != ERROR_NONE)
+			return ERROR_OUT_OF_MEMORY;
+	}
+
+	/* Set vertex-to-simplex incidence. */
+	for (t = 0; t < tetrapal->simplices.count; t++)
+	{
+		if (is_infinite_simplex(tetrapal, t))
+			continue;
+
+		for (local_t i = 0; i < 3; i++)
+		{
+			vertex_t vt = get_incident_vertex(tetrapal, t, i);
+			tetrapal->vertices.incident_simplex[vt] = t;
+		}
+	}
+
+	/* Free intermediate structures. */
+	TETRAPAL_FREE(tetrapal->simplices.deleted.simplices);
+	tetrapal->simplices.deleted.simplices = NULL;
+	stack_free(&tetrapal->stack);
+
+	return ERROR_NONE;
+}
+
+static error_t insert_2d(Tetrapal* tetrapal, vertex_t v)
+{
+	/* Add this point to the vertex array. */
+	const coord_t* p = get_coordinates(tetrapal, v);
+
+	/* Find the enclosing simplex of the input point. */
+	simplex_t t = locate_2d(tetrapal, p);
+
+	/* Check whether the input point is coincident with a vertex of the enclosing simplex.
+		We still leave the vertex in the structure for consistency, but we don't triangulate it. */
+	if (is_coincident_simplex(tetrapal, t, p) == true)
+		return ERROR_NONE;
+
+	/* Remove conflict simplices and triangulate the cavity. */
+	t = stellate_2d(tetrapal, v, t);
+
+	if (t == SIMPLEX_NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Success! */
+	return ERROR_NONE;
+}
+
+static simplex_t locate_2d(const Tetrapal* tetrapal, const coord_t point[2])
+{
+	/* Start from the last finite simplex. */
+	simplex_t t = tetrapal->simplices.last;
+	simplex_t t_prev = SIMPLEX_NULL; /* The simplex we just walked from. */
+
+	/* Local seed for rng. */
+	random_t seed = (random_t)t;
+
+	/* Walk the triangulation until an enclosing simplex is found. */
+WALK:
+	{
+		/* Check if we are at an infinite simplex. */
+		if (is_infinite_simplex(tetrapal, t))
+			return t;
+
+		/* Get the vertices of the current simplex. */
+		const vertex_t v[3] =
+		{
+			get_incident_vertex(tetrapal, t, 0),
+			get_incident_vertex(tetrapal, t, 1),
+			get_incident_vertex(tetrapal, t, 2)
+		};
+
+		/* Get the coordinates of each vertex for the current simplex. */
+		const coord_t* p[3] =
+		{
+			get_coordinates(tetrapal, v[0]),
+			get_coordinates(tetrapal, v[1]),
+			get_coordinates(tetrapal, v[2])
+		};
+
+		/* Start from a random edge (stochastic walk). */
+		const random_t r = random_range(&seed, 3);
+
+		/* Test the orientation against every edge until a negative one is found. */
+		for (int j = 0; j < 3; j++)
+		{
+			const local_t f = (local_t)(j + r) % 3;
+			const simplex_t ta = get_adjacent_simplex(tetrapal, t, f);
+
+			/* If we just came from this simplex, skip it. */
+			if (ta == t_prev)
+				continue;
+
+			const local_t a = edge_opposite_vertex[f][0];
+			const local_t b = edge_opposite_vertex[f][1];
+
+			/* If the orientation is negative, we should move towards the adjacent simplex. */
+			if (orient_2d(point, p[a], p[b]) < 0)
+			{
+				t_prev = t;
+				t = ta;
+				goto WALK;
+			}
+		}
+
+		return t;
+	}
+}
+
+static simplex_t stellate_2d(Tetrapal* tetrapal, vertex_t v, simplex_t t)
+{
+	TETRAPAL_ASSERT(is_enclosing_simplex(tetrapal, t, get_coordinates(tetrapal, v)) == true, "Starting simplex does not enclose the point!\n");
+
+	/* Reference to a non-conflict triangle whose edge is on the boundary. */
+	simplex_t t_boundary = SIMPLEX_NULL;
+	local_t e_boundary = LOCAL_NULL;
+	size_t count = 0;
+
+	/* Insert the first conflict simplex [t] into the stack. */
+	Stack* stack = &tetrapal->stack;
+	stack_clear(stack);
+
+	if (stack_insert(stack, t) != ERROR_NONE)
+		return SIMPLEX_NULL;
+
+	/* Mark the first simplex as free, since we know it should already be in conflict. */
+	if (free_simplex(tetrapal, t) != ERROR_NONE)
+		return SIMPLEX_NULL;
+
+	/* Get the coordinates of the vertex. */
+	const coord_t* p = get_coordinates(tetrapal, v);
+
+	/* Perform depth-search traversal of conflict zone until there are no more simplices to check.*/
+	while (stack_is_empty(stack) == false)
+	{
+		/* Get and pop the simplex at the top of the stack. */
+		t = stack_top(stack);
+		stack_pop(stack);
+
+		/* Check every adjacent triangle for conflict. */
+		for (local_t i = 0; i < 3; i++)
+		{
+			simplex_t adj = get_adjacent_simplex(tetrapal, t, i);
+
+			/* If the simplex is free, then it has already been processed. */
+			if (is_free_simplex(tetrapal, adj) == true)
+				continue;
+
+			/* If it is in conflict, free the simplex and add it to the stack. */
+			if (conflict_2d(tetrapal, adj, p) == true)
+			{
+				if (stack_insert(stack, adj) != ERROR_NONE)
+					return SIMPLEX_NULL;
+
+				if (free_simplex(tetrapal, adj) != ERROR_NONE)
+					return SIMPLEX_NULL;
+
+				continue;
+			}
+
+			/* It is not in conflict. Keep a reference to the boundary triangle. */
+			t_boundary = adj;
+			e_boundary = find_adjacent(tetrapal, adj, t);
+			count += 1;
+
+			/* Set the adjacent simplex on the boundary edge to null so we can identify it later. */
+			set_adjacent_simplex(tetrapal, t_boundary, SIMPLEX_NULL, e_boundary);
+		}
+	}
+
+	TETRAPAL_ASSERT(t_boundary != SIMPLEX_NULL && e_boundary != LOCAL_NULL, "Boundary was ill-formed!\n");
+
+	/* Rotate around the boundary, stellating the cavity. */
+	simplex_t t_prev = SIMPLEX_NULL;
+	simplex_t t_first = SIMPLEX_NULL;
+
+	do
+	{
+		/* Get the boundary vertices. */
+		local_t a = edge_opposite_vertex[e_boundary][0];
+		local_t b = edge_opposite_vertex[e_boundary][1];
+		vertex_t va = get_incident_vertex(tetrapal, t_boundary, a);
+		vertex_t vb = get_incident_vertex(tetrapal, t_boundary, b);
+
+		/* Create new triangle and set adjacencies wrt the boundary triangle. */
+		t = new_triangle(tetrapal, v, vb, va);
+
+		/* Check if we failed to create a new triangle. */
+		if (t == SIMPLEX_NULL)
+			return SIMPLEX_NULL;
+
+		set_adjacent_simplex(tetrapal, t, t_boundary, 0);
+		set_adjacent_simplex(tetrapal, t_boundary, t, e_boundary);
+
+		/* Set adjacency to the previous triangle. */
+		if (t_prev != SIMPLEX_NULL)
+		{
+			set_adjacent_simplex(tetrapal, t, t_prev, 1);
+			set_adjacent_simplex(tetrapal, t_prev, t, 2);
+		}
+		else
+		{
+			t_first = t;
+		}
+
+		t_prev = t;
+		count -= 1;
+
+		/* Leave if we visited all the boundary edges. */
+		if (count == 0)
+			break;
+
+		/* Find the next boundary triangle by rotating around the boundary vertex. */
+		vertex_t pivot = vb;
+		e_boundary = a;
+
+		while (get_adjacent_simplex(tetrapal, t_boundary, e_boundary) != SIMPLEX_NULL)
+		{
+			t_boundary = get_adjacent_simplex(tetrapal, t_boundary, e_boundary);
+			e_boundary = edge_opposite_vertex[find_vertex(tetrapal, t_boundary, pivot)][1];
+		}
+
+	} while (count != 0);
+
+	/* Connect first and last triangles. */
+	set_adjacent_simplex(tetrapal, t_first, t, 1);
+	set_adjacent_simplex(tetrapal, t, t_first, 2);
+
+	return t;
+}
+
+static bool conflict_2d(const Tetrapal* tetrapal, simplex_t t, const coord_t point[2])
+{
+	TETRAPAL_ASSERT(t < tetrapal->simplices.count + tetrapal->simplices.deleted.count, "Simplex index out of range!");
+
+	/* Get the coordinates of each vertex for the current simplex. */
+	const coord_t* p[3];
+
+	for (local_t i = 0; i < 3; i++)
+	{
+		const vertex_t v = get_incident_vertex(tetrapal, t, i);
+
+		/* We represent the coordinates of an infinite vertex as a NULL pointer. This idea is borrowed from Geogram. */
+		p[i] = (v == VERTEX_INFINITE) ? NULL : get_coordinates(tetrapal, v);
+	}
+
+	/* The rules on testing the conflict zone for finite and infinite simplices are slightly different.
+		For finite simplices, we can do a simple insphere/incircle test as normal.
+		For infinite simplices, we must perform an orientation test on the finite facet.
+		If the point lies on the inner side of the plane defined by the finite facet, then it is in conflict.
+		If the point is directly on the plane however, we must do another test to check whether it is on the facet's circumcircle (i.e. in conflict). */
+
+		/* Look for the infinite vertex if there is one. */
+	for (local_t i = 0; i < 3; i++)
+	{
+		/* Ignore finite vertices. */
+		if (p[i] != NULL)
+			continue;
+
+		const local_t a = edge_opposite_vertex[i][0];
+		const local_t b = edge_opposite_vertex[i][1];
+
+		/* Get the orientation wrt the finite facet.*/
+		const coord_t orientation = orient_2d(point, p[a], p[b]);
+
+		/* If the orientation is positive, then this simplex is in conflict. If negative, then it is not. */
+		if (orientation > 0)
+			return true;
+
+		if (orientation < 0)
+			return false;
+
+		/* If the orientation is exactly 0, then we need to check whether it lies on the facet's circumcircle.
+			This is equivalent to checking whether the adjacent finite simplex is in conflict with the point. */
+		const simplex_t adj = get_adjacent_simplex(tetrapal, t, i);
+		TETRAPAL_ASSERT(is_infinite_simplex(tetrapal, adj) == false, "Adjacent simplex to infinite vertex should be finite!");
+
+		/* Because we stellate depth-first, the simplex would have already been freed if it was in conflict.
+			This saves us an insphere/incircle test. */
+		if (is_free_simplex(tetrapal, adj))
+			return true;
+		else
+			return (conflict_2d(tetrapal, adj, point));
+	}
+
+	/* The simplex is finite, so we do a regular insphere/incircle test. */
+	if (incircle_2d(p[0], p[1], p[2], point) > 0)
+		return true;
+	else
+		return false;
+}
+
+static size_t interpolate_2d(const Tetrapal* tetrapal, const coord_t point[2], int indices[3], float weights[3], simplex_t* t)
+{
+	vertex_t v[3];
+	const coord_t* p[3];
+	coord_t orient[3]; /* Orientation for each edge. */
+	simplex_t t_prev = SIMPLEX_NULL; /* The simplex we just walked from. */
+
+	/* Find an appropriate starting simplex. */
+	v[0] = kdtree_get_vertex(tetrapal, kdtree_find_approximate(tetrapal, point));
+	*t = get_incident_simplex(tetrapal, v[0]);
+	random_t seed = (random_t)(*t); /* Local seed for rng. */
+
+	/* Start walking from within the triangulation. */
+WALK_START:
+	{
+		/* Check if we are at an infinite simplex. */
+		if (is_infinite_simplex(tetrapal, *t))
+			goto WALK_HULL; /* Perform a hull walk. */
+
+		/* Get the vertex data for the current simplex. */
+		for (local_t i = 0; i < 3; i++)
+		{
+			v[i] = get_incident_vertex(tetrapal, *t, i);
+			p[i] = get_coordinates(tetrapal, v[i]);
+		}
+
+		/* Start from a random edge (stochastic walk). */
+		random_t r = random_range(&seed, 3);
+
+		/* Test the orientation against every edge until a negative one is found. */
+		for (local_t i = 0; i < 3; i++)
+		{
+			local_t e = (local_t)(i + r) % 3;
+			local_t a = edge_opposite_vertex[e][0];
+			local_t b = edge_opposite_vertex[e][1];
+			simplex_t adj = get_adjacent_simplex(tetrapal, *t, e);
+
+			/* Get the orientation. */
+			orient[e] = orient_2d(point, p[a], p[b]);
+
+			/* If the orientation is negative, move towards the adjacent simplex. */
+			if (orient[e] < 0 && adj != t_prev)
+			{
+				t_prev = *t;
+				*t = adj;
+				goto WALK_START;
+			}
+		}
+
+		/* This is the enclosing simplex. Calculate barycentric weights from the orientation results. */
+		const float total = (float)(orient[0] + orient[1] + orient[2]);
+		const float inverse = 1.0f / total;
+
+		indices[0] = v[0];
+		indices[1] = v[1];
+		indices[2] = v[2];
+		weights[0] = orient[0] * inverse;
+		weights[1] = orient[1] * inverse;
+		weights[2] = 1.0f - (weights[0] + weights[1]);
 
 		return 3;
 	}
 
-	// Walk the hull
-	while (1)
+	/* Walk the hull. */
+WALK_HULL:
 	{
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
+		/* Get the current edge on the hull. */
+		local_t e = find_vertex(tetrapal, *t, VERTEX_INFINITE);
 
-		int adjacent[2] = {
-			adjacent_triangle(tetrapal, *a, VERTEX_INFINITE),
-			adjacent_triangle(tetrapal, VERTEX_INFINITE, *b) };
+		v[0] = get_incident_vertex(tetrapal, *t, edge_opposite_vertex[e][0]);
+		v[1] = get_incident_vertex(tetrapal, *t, edge_opposite_vertex[e][1]);
+		p[0] = get_coordinates(tetrapal, v[0]);
+		p[1] = get_coordinates(tetrapal, v[1]);
 
-		int64_t pj[3], pk[3];
-		get_coordinates(tetrapal, adjacent[0], pj);
-		get_coordinates(tetrapal, adjacent[1], pk);
+		for (local_t a = 0; a < 2; a++)
+		{
+			local_t b = (a + 1) % 2;
 
-		if ((orient2d_fast(pj, pa, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) > 0) && (orient1d_fast(pa, pj, p) > 0)) { *b = adjacent[0]; swap_int(a, b); continue; }
-		if ((orient2d_fast(pb, pk, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) > 0) && (orient1d_fast(pb, pk, p) > 0)) { *a = adjacent[1]; swap_int(a, b); continue; }
+			/* Is the point before [a]? */
+			coord_t ab[2], ap[2];
+			sub_2d(p[b], p[a], ab);
+			sub_2d(point, p[a], ap);
+			orient[b] = dot_2d(ab, ap);
 
-		// Check whether the point lies within a vertex region
-		if (orient1d_fast(pa, pb, p) < 0) { *u = 1.0; *b = *c = 0; *v = *w = 0.0; return 1; }
-		else if (orient1d_fast(pb, pa, p) < 0) { *u = 1.0; *a = *b; *b = *c = 0; *v = *w = 0.0; return 1; }
+			if (orient[b] < 0)
+			{
+				simplex_t adj = get_adjacent_simplex(tetrapal, *t, edge_opposite_vertex[e][b]);
 
-		// Get the weights for this segment
-		barycentric_1d(p, pa, pb, u, v); *c = 0; *w = 0.0;
+				/* Did we just come from this edge? If so, we are in a vertex region. */
+				if (adj == t_prev)
+				{
+					*t = get_adjacent_simplex(tetrapal, *t, e);
+					indices[0] = (int)v[a];
+					weights[0] = 1.0f;
+
+					return 1;
+				}
+
+				/* Otherwise jump to the next edge. */
+				t_prev = *t;
+				*t = adj;
+				goto WALK_HULL;
+			}
+		}
+
+		/* Point is in this edge region. */
+		*t = get_adjacent_simplex(tetrapal, *t, e);
+		indices[0] = (int)v[0];
+		indices[1] = (int)v[1];
+		weights[0] = (float)(orient[0] / (orient[0] + orient[1]));
+		weights[1] = 1.0f - weights[0];
 
 		return 2;
 	}
 }
 
-static int interpolate_1d(const TetrapalData* tetrapal, const int64_t p[3], int* a, int* b, double* u, double* v)
+static vertex_t nearest_2d(const Tetrapal* tetrapal, const coord_t point[2])
 {
-	int64_t pa[3], pb[3];
+	vertex_t v[2];
+	const coord_t* p[2];
+	simplex_t t[2];
 
-	int null[2];
-	spatialgrid_locate(tetrapal, p, a, b, &null[0], &null[1]);
+	/* Find an appropriate starting simplex. */
+	v[0] = kdtree_get_vertex(tetrapal, kdtree_find_approximate(tetrapal, point));
+	t[0] = get_incident_simplex(tetrapal, v[0]);
+	p[0] = get_coordinates(tetrapal, v[0]);
+	coord_t distance_a = distance_squared_2d(point, p[0]);
 
-	//*a = tetrapal->last[0];
-	//*b = tetrapal->last[1];
-
-	while (1)
+	/* Walk the graph by rotating around each vertex until we find the true closest. */
+WALK_GRAPH:
 	{
-		// If we arrive at an infinite segment, then our point lies beyond the boundary vertex
-		if (is_infinite_segment(*a, *b))
+		/* Set [t1] as the simplex we start rotating from. */
+		t[1] = t[0];
+
+		do
 		{
-			if (*a == VERTEX_INFINITE)
+			local_t a = find_vertex(tetrapal, t[0], v[0]);
+			local_t b = edge_opposite_vertex[a][0];
+			v[1] = get_incident_vertex(tetrapal, t[0], b);
+
+			/* Don't test infinite vertices. */
+			if (v[1] != VERTEX_INFINITE)
 			{
-				*a = *b;
+				p[1] = get_coordinates(tetrapal, v[1]);
+				coord_t distance_b = distance_squared_2d(point, p[1]);
+
+				if (distance_b < distance_a)
+				{
+					v[0] = v[1];
+					p[0] = p[1];
+					distance_a = distance_b;
+					goto WALK_GRAPH;
+				}
 			}
 
-			*b = 0;
-			*u = 1.0;
-			*v = 0.0;
+			/* Get the next simplex around the current edge. */
+			t[0] = get_adjacent_simplex(tetrapal, t[0], b);
 
-			return 1;
-		}
+		} while (t[0] != t[1]);
 
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-
-		// Test the query point against both sides of the line
-		if (orient1d_fast(pa, pb, p) < 0) { *b = adjacent_segment(tetrapal, *a, VERTEX_PREV); swap_int(a, b); continue; }
-		if (orient1d_fast(pb, pa, p) < 0) { *a = adjacent_segment(tetrapal, *b, VERTEX_NEXT); swap_int(a, b); continue; }
-
-		// If none of the faces return negative, then we have found the enclosing segment
-		barycentric_1d(p, pa, pb, u, v);
-
-		return 2;
+		/* We found the closest vertex. */
+		return v[0];
 	}
 }
 
-// ===============================================================
-//		3D Triangulation
-// ===============================================================	
-
-static int triangulate_3d(TetrapalData* tetrapal)
+static inline void transform_2d(const Tetrapal* tetrapal, const float point[3], coord_t out[2])
 {
-	if (tetrapal->size < 4)
-		return 0;
+	coord_t p[3] = { (coord_t)point[0], (coord_t)point[1], (coord_t)point[2] };
 
-	// Determine the first valid tetrahedron
-	int a = 0, b = 1, c = 2, d = 3;
-	int64_t pa[3], pb[3], pc[3], pd[3];
-	get_coordinates(tetrapal, a, pa);
-	get_coordinates(tetrapal, b, pb);
-	get_coordinates(tetrapal, c, pc);
-	get_coordinates(tetrapal, d, pd);
+	/* Clamp values. */
+	out[0] = out[0] > 1.0f ? 1.0f : (out[0] < 0.0f ? 0.0f : out[0]);
+	out[1] = out[1] > 1.0f ? 1.0f : (out[1] < 0.0f ? 0.0f : out[1]);
 
-	while (orient1d_filtered(pa, pb, pb) == 0)
-		if ((size_t)b < tetrapal->size - 1) get_coordinates(tetrapal, ++b, pb);
-		else return 0;
+	/* Project onto basis vectors. */
+	out[0] = dot_3d(p, tetrapal->vertices.basis[0]);
+	out[1] = dot_3d(p, tetrapal->vertices.basis[1]);
 
-	while (orient2d_filtered(pa, pb, pc, pa, pb, pc) == 0)
-		if ((size_t)c < tetrapal->size - 1) get_coordinates(tetrapal, ++c, pc);
-		else return 0;
-
-	while (orient3d_filtered(pa, pb, pc, pd) == 0)
-		if ((size_t)d < tetrapal->size - 1) get_coordinates(tetrapal, ++d, pd);
-		else return 0;
-
-	// Ensure positive orientation
-	if (orient3d_filtered(pa, pb, pc, pd) < 0)
-		swap_int(&a, &c);
-
-	add_tetrahedron(tetrapal, a, b, c, d);
-	add_tetrahedron(tetrapal, a, c, b, VERTEX_INFINITE);
-	add_tetrahedron(tetrapal, a, b, d, VERTEX_INFINITE);
-	add_tetrahedron(tetrapal, a, d, c, VERTEX_INFINITE);
-	add_tetrahedron(tetrapal, b, c, d, VERTEX_INFINITE);
-	tetrapal->dimensions = 3;
-
-#ifdef TETRAPAL_DEBUG
-	clock_t time_start;
-	TIME_LOCATE = TIME_STELLATE = 0;
-#endif
-
-	// Start incremental insertion
-	for (size_t i = 0; i < tetrapal->size; i++)
-	{
-		a = tetrapal->last[0];
-		b = tetrapal->last[1];
-		c = tetrapal->last[2];
-		d = tetrapal->last[3];
-
-		int64_t pi[3];
-		get_coordinates(tetrapal, i, pi);
-
-	#ifdef TETRAPAL_DEBUG
-		time_start = clock();
-	#endif
-
-		if (!locate_tetrahedron(tetrapal, pi, &a, &b, &c, &d))
-			continue;
-
-	#ifdef TETRAPAL_DEBUG
-		TIME_LOCATE += clock() - time_start;
-		time_start = clock();
-	#endif
-
-		delete_tetrahedron(tetrapal, a, b, c, d);
-		consider_tetrahedron(tetrapal, a, b, c, i);
-		consider_tetrahedron(tetrapal, a, c, d, i);
-		consider_tetrahedron(tetrapal, a, d, b, i);
-		consider_tetrahedron(tetrapal, b, d, c, i);
-
-	#ifdef TETRAPAL_DEBUG
-		TIME_STELLATE += clock() - time_start;
-	#endif
-	}
-
-#ifdef TETRAPAL_DEBUG
-	printf("LOCATE TIME: %ums\n", (unsigned int)TIME_LOCATE);
-	printf("STELLATE TIME: %ums\n", (unsigned int)TIME_STELLATE);
-#endif
-
-	// Build the vertex graph by iterating through the adjacency map
-	for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
-	{
-		const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-		const int* vertex = hashmap_get_value(tetrapal->adjacency, i);
-
-		graph_insert(tetrapal->graph, key->a, *vertex);
-		graph_insert(tetrapal->graph, key->b, *vertex);
-		graph_insert(tetrapal->graph, key->c, *vertex);
-
-		if (is_infinite_tetrahedron(key->a, key->b, key->c, *vertex) == 0)
-		{
-			tetrapal->number_of_tetrahedra++;
-		}
-
-		if (is_infinite_triangle(key->a, key->b, key->c) == 0)
-		{
-			tetrapal->number_of_triangles++;
-		}
-	}
-
-	// Every tetrahedron is recorded four times, and each triangle twice
-	tetrapal->number_of_tetrahedra /= 4;
-	tetrapal->number_of_triangles /= 2;
-
-	// Build spatial grid
-	spatialgrid_build(tetrapal);
-
-	return 1;
+	/* Scale coordinates. */
+	out[0] = (coord_t)roundf(out[0] * TETRAPAL_PRECISION);
+	out[1] = (coord_t)roundf(out[1] * TETRAPAL_PRECISION);
 }
 
-static int is_infinite_tetrahedron(int a, int b, int c, int d)
+static simplex_t new_triangle(Tetrapal* tetrapal, vertex_t a, vertex_t b, vertex_t c)
 {
-	return (a == VERTEX_INFINITE ||
+	simplex_t t = SIMPLEX_NULL;
+
+	/* Check if there are any free simplices. */
+	const size_t num_deleted = tetrapal->simplices.deleted.count;
+
+	if (num_deleted > 0)
+	{
+		t = tetrapal->simplices.deleted.simplices[num_deleted - 1];
+		tetrapal->simplices.deleted.count -= 1;
+	}
+	else /* No free simplices; add a new index. */
+	{
+		const error_t error = check_simplices_capacity(tetrapal);
+
+		/* Could not reallocate the simplex array. */
+		if (error)
+			return SIMPLEX_NULL;
+
+		t = (simplex_t)tetrapal->simplices.count;
+	}
+
+	/* Set vertex incidence. */
+	tetrapal->simplices.incident_vertex[t * 3 + 0] = a;
+	tetrapal->simplices.incident_vertex[t * 3 + 1] = b;
+	tetrapal->simplices.incident_vertex[t * 3 + 2] = c;
+	tetrapal->simplices.flags[t].all = false;
+
+	/* Is it an infinite simplex? */
+	if (a == VERTEX_INFINITE ||
 		b == VERTEX_INFINITE ||
-		c == VERTEX_INFINITE ||
-		d == VERTEX_INFINITE) ? 1 : 0;
-}
-
-static void rotate_tetrahedron(int* a, int* b, int* c, int* d, int rotations)
-{
-	int an, bn, cn, dn;
-
-	// CCW rotation
-	switch (rotations % 4) {
-	case 1: an = *b; bn = *d; cn = *c; dn = *a; break;
-	case 2: an = *c; bn = *d; cn = *a; dn = *b; break;
-	case 3: an = *a; bn = *d; cn = *b; dn = *c; break;
-	default: return;
-	}
-
-	*a = an; *b = bn; *c = cn; *d = dn;
-}
-
-static void add_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d)
-{
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, d, c }, & a);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, c, d }, & b);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, d, b }, & c);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, c }, & d);
-
-	// If this tetrahedron is infinite, find the nearest finite one
-	if (a == VERTEX_INFINITE) { a = adjacent_tetrahedron(tetrapal, b, c, d); swap_int(&c, &d); }
-	else if (b == VERTEX_INFINITE) { b = adjacent_tetrahedron(tetrapal, c, a, d); swap_int(&a, &d); }
-	else if (c == VERTEX_INFINITE) { c = adjacent_tetrahedron(tetrapal, d, a, b); swap_int(&a, &b); }
-	else if (d == VERTEX_INFINITE) { d = adjacent_tetrahedron(tetrapal, a, c, b); swap_int(&c, &b); }
-
-	tetrapal->last[0] = a;
-	tetrapal->last[1] = b;
-	tetrapal->last[2] = c;
-	tetrapal->last[3] = d;
-}
-
-static void delete_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d)
-{
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, d, c });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, c, d });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, d, b });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, c });
-}
-
-static int adjacent_tetrahedron(const TetrapalData* tetrapal, int a, int b, int c)
-{
-	const int* adjacent = hashmap_find(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, c });
-
-	if (!adjacent)
-		return VERTEX_NULL;
-	else
-		return *adjacent;
-}
-
-static int check_conflict_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int d, int e)
-{
-	int64_t pa[3], pb[3], pc[3], pd[3], pe[3];
-	get_coordinates(tetrapal, a, pa);
-	get_coordinates(tetrapal, b, pb);
-	get_coordinates(tetrapal, c, pc);
-	get_coordinates(tetrapal, d, pd);
-	get_coordinates(tetrapal, e, pe);
-
-	if (a == VERTEX_INFINITE) {
-		int orient = orient3d_filtered(pe, pb, pc, pd);
-		return orient ? orient : incircle_filtered(pb, pc, pd, pe);
-	}
-	if (b == VERTEX_INFINITE) {
-		int orient = orient3d_filtered(pa, pe, pc, pd);
-		return orient ? orient : incircle_filtered(pd, pc, pa, pe);
-	}
-	if (c == VERTEX_INFINITE) {
-		int orient = orient3d_filtered(pa, pb, pe, pd);
-		return orient ? orient : incircle_filtered(pa, pb, pd, pe);
-	}
-	if (d == VERTEX_INFINITE) {
-		int orient = orient3d_filtered(pa, pb, pc, pe);
-		return orient ? orient : incircle_filtered(pa, pb, pc, pe);
-	}
-
-	return insphere_filtered(pa, pb, pc, pd, pe);
-}
-
-static void consider_tetrahedron(TetrapalData* tetrapal, int a, int b, int c, int e)
-{
-	// Find tetrahedron cbad opposite facet abc from u
-	int d = adjacent_tetrahedron(tetrapal, c, b, a);
-
-	if (d == VERTEX_NULL)
-		return;
-
-	if (check_conflict_tetrahedron(tetrapal, c, b, a, d, e) > 0) {
-		delete_tetrahedron(tetrapal, c, b, a, d);
-		consider_tetrahedron(tetrapal, a, b, d, e);
-		consider_tetrahedron(tetrapal, d, b, c, e);
-		consider_tetrahedron(tetrapal, a, d, c, e);
+		c == VERTEX_INFINITE)
+	{
+		tetrapal->simplices.flags[t].bit.is_infinite = true;
 	}
 	else
-		add_tetrahedron(tetrapal, a, b, c, e);
-}
-
-static int locate_tetrahedron(TetrapalData* tetrapal, int64_t p[3], int* a, int* b, int* c, int* d)
-{
-	int64_t pa[3], pb[3], pc[3], pd[3];
-	uint32_t random_state = 1;
-
-	while (1)
 	{
-		// If we arrive at an infinite tetrahedron, then our point lies outside the current triangulation
-		if (is_infinite_tetrahedron(*a, *b, *c, *d))
-			return 1;
-
-		// Randomly rotate indices (stochastic walk)
-		rotate_tetrahedron(a, b, c, d, random_range_int(&random_state, 4));
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, *c, pc);
-		get_coordinates(tetrapal, *d, pd);
-
-		// Reject coincident points
-		if (is_coincident(p, pa) ||
-			is_coincident(p, pb) ||
-			is_coincident(p, pc) ||
-			is_coincident(p, pd))
-			return 0;
-
-		// Test the query point against every face
-		if (orient3d_filtered(pa, pb, pc, p) < 0) { *d = adjacent_tetrahedron(tetrapal, *c, *b, *a); swap_int(a, c); continue; }
-		if (orient3d_filtered(pa, pc, pd, p) < 0) { *b = adjacent_tetrahedron(tetrapal, *d, *c, *a); swap_int(b, d); continue; }
-		if (orient3d_filtered(pa, pd, pb, p) < 0) { *c = adjacent_tetrahedron(tetrapal, *b, *d, *a); swap_int(c, d); continue; }
-		if (orient3d_filtered(pb, pd, pc, p) < 0) { *a = adjacent_tetrahedron(tetrapal, *c, *d, *b); swap_int(a, d); continue; }
-
-		// If none of the faces return negative, then we have found the enclosing tetrahedron
-		return 1;
-	}
-}
-
-// ===============================================================
-//		2D Triangulation
-// ===============================================================	
-
-static int triangulate_2d(TetrapalData* tetrapal)
-{
-	if (tetrapal->size < 3)
-		return 0;
-
-	// Determine the first valid triangle
-	int a = 0, b = 1, c = 2;
-	int64_t pa[3], pb[3], pc[3];
-	get_coordinates(tetrapal, a, pa);
-	get_coordinates(tetrapal, b, pb);
-	get_coordinates(tetrapal, c, pc);
-
-	while (orient1d_filtered(pa, pb, pb) == 0)
-		if ((size_t)b < tetrapal->size - 1) get_coordinates(tetrapal, ++b, pb);
-		else return 0;
-
-	while (orient2d_filtered(pa, pb, pc, pa, pb, pc) == 0)
-		if ((size_t)c < tetrapal->size - 1) get_coordinates(tetrapal, ++c, pc);
-		else return 0;
-
-	// Record the orientation defined by the first triangle
-	memcpy(tetrapal->orient_a, pa, sizeof(*tetrapal->orient_a) * 3);
-	memcpy(tetrapal->orient_b, pb, sizeof(*tetrapal->orient_b) * 3);
-	memcpy(tetrapal->orient_c, pc, sizeof(*tetrapal->orient_c) * 3);
-
-	add_triangle(tetrapal, a, b, c);
-	add_triangle(tetrapal, b, a, VERTEX_INFINITE);
-	add_triangle(tetrapal, c, b, VERTEX_INFINITE);
-	add_triangle(tetrapal, a, c, VERTEX_INFINITE);
-	tetrapal->dimensions = 2;
-
-	// Start incremental insertion
-	for (size_t i = 0; i < tetrapal->size; i++)
-	{
-		a = tetrapal->last[0];
-		b = tetrapal->last[1];
-		c = tetrapal->last[2];
-
-		int64_t pi[3];
-		get_coordinates(tetrapal, i, pi);
-
-		if (!locate_triangle(tetrapal, pi, &a, &b, &c))
-			continue;
-
-		delete_triangle(tetrapal, a, b, c);
-		consider_triangle(tetrapal, a, b, i);
-		consider_triangle(tetrapal, b, c, i);
-		consider_triangle(tetrapal, c, a, i);
+		tetrapal->simplices.flags[t].bit.is_infinite = false;
+		tetrapal->simplices.last = t;
 	}
 
-	// Build the vertex graph by iterating through the adjacency map
-	for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
+#ifdef TETRAPAL_DEBUG
+	/* Set adjacencies to null. */
+	tetrapal->simplices.adjacent_simplex[t * 3 + 0] = SIMPLEX_NULL;
+	tetrapal->simplices.adjacent_simplex[t * 3 + 1] = SIMPLEX_NULL;
+	tetrapal->simplices.adjacent_simplex[t * 3 + 2] = SIMPLEX_NULL;
+#endif
+
+	tetrapal->simplices.count += 1;
+
+	return t;
+}
+
+/********************************************/
+/*		1D Triangulation (Binary Tree)		*/
+/********************************************/
+
+static error_t triangulate_1d(Tetrapal* tetrapal, const float* points, const int size)
+{
+	/* Allocate memory. */
+	tetrapal->vertices.capacity = size;
+	tetrapal->vertices.coordinates = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.coordinates) * size);
+	tetrapal->vertices.tree = TETRAPAL_MALLOC(sizeof(*tetrapal->vertices.tree) * size);
+
+	/* Memory allocation failed? */
+	if (tetrapal->vertices.coordinates == NULL ||
+		tetrapal->vertices.tree == NULL)
+		return ERROR_OUT_OF_MEMORY;
+
+	tetrapal->vertices.count = 0;
+
+	/* Get the coords of the first simplex in 3D space. */
+	const coord_t* p[2] =
 	{
-		const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-		const int* vertex = hashmap_get_value(tetrapal->adjacency, i);
+		&points[0 * 3],
+		&points[1 * 3]
+	};
 
-		graph_insert(tetrapal->graph, key->a, *vertex);
-		graph_insert(tetrapal->graph, key->b, *vertex);
+	/* Create the 3D basis vector defining the coordinate system for the 1D triangulation. */
+	coord_t x[3];
+	sub_3d(p[1], p[0], x);
+	normalise_3d(x, x);
+	mul_3d(x, 1.0f / sqrtf(3.0f), tetrapal->vertices.basis[0]);
 
-		if (is_infinite_triangle(key->a, key->b, *vertex) == 0)
+	/* Add all points to the vertex array, converting coords to 1D space. */
+	for (int i = 0; i < size; i++)
+	{
+		coord_t tmp;
+		transform_1d(tetrapal, &points[i * 3], &tmp);
+		new_vertex(tetrapal, &tmp);
+	}
+
+	/* Inistialise and build the binary tree */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
+		tetrapal->vertices.tree[i] = i;
+
+	if (kdtree_balance(tetrapal, 0, (size_t)size - 1, 0) != ERROR_NONE)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* 'Triangulation' is done! */
+	return ERROR_NONE;
+}
+
+static inline void transform_1d(const Tetrapal* tetrapal, const float point[3], coord_t out[1])
+{
+	coord_t p[3] = { (coord_t)point[0], (coord_t)point[1], (coord_t)point[2] };
+
+	/* Clam, project onto basis vector, and scale. */
+	out[0] = out[0] > 1.0f ? 1.0f : (out[0] < 0.0f ? 0.0f : out[0]);
+	out[0] = dot_3d(p, tetrapal->vertices.basis[0]);
+	out[0] = (coord_t)roundf(out[0] * TETRAPAL_PRECISION);
+}
+
+static size_t interpolate_1d(const Tetrapal* tetrapal, const coord_t point[1], int indices[2], float weights[2])
+{
+	vertex_t v[2];
+	const coord_t* p[2];
+
+	/* Find the approximate closest vertex. */
+	size_t index = kdtree_find_approximate(tetrapal, point);
+	v[0] = kdtree_get_vertex(tetrapal, index);
+	p[0] = get_coordinates(tetrapal, v[0]);
+
+	/* Is the query point before or after this vertex? */
+	if (point[0] < p[0][0])
+	{
+		if (index == 0) /* No points before it. */
 		{
-			tetrapal->number_of_triangles++;
+			indices[0] = v[0];
+			weights[0] = 1.0f;
+			return 1;
+		}
+		else /* Interpolate on this edge. */
+		{
+			v[1] = kdtree_get_vertex(tetrapal, index - 1);
+			p[1] = get_coordinates(tetrapal, v[1]);
+
+			indices[0] = v[0];
+			indices[1] = v[1];
+			weights[0] = (point[0] - p[1][0]) / (p[0][0] - p[1][0]);
+			weights[1] = 1.0f - weights[0];
+			return 2;
+		}
+	}
+	else if (point[0] > p[0][0]) /* After the vertex. */
+	{
+		if (index == tetrapal->vertices.count - 1) /* No points after it. */
+		{
+			indices[0] = v[0];
+			weights[0] = 1.0f;
+			return 1;
+		}
+		else /* Interpolate on this edge. */
+		{
+			v[1] = kdtree_get_vertex(tetrapal, index + 1);
+			p[1] = get_coordinates(tetrapal, v[1]);
+
+			indices[1] = v[1];
+			indices[0] = v[0];
+			weights[1] = (point[0] - p[0][0]) / (p[1][0] - p[0][0]);
+			weights[0] = 1.0f - weights[1];
+			return 2;
 		}
 	}
 
-	// Each triangle is recorded three times
-	tetrapal->number_of_triangles /= 3;
-
-	// Build spatial grid
-	spatialgrid_build(tetrapal);
-
+	/* Point lies exactly on this vertex. */
+	indices[0] = v[0];
+	weights[0] = 1.0f;
 	return 1;
 }
 
-static int locate_triangle(TetrapalData* tetrapal, int64_t p[3], int* a, int* b, int* c)
+static vertex_t nearest_1d(const Tetrapal* tetrapal, const coord_t point[1])
 {
-	int64_t pa[3], pb[3], pc[3];
-	uint32_t random_state = 1;
+	vertex_t v[2];
+	const coord_t* p[2];
 
-	while (1)
+	/* Find the approximate closest vertex. */
+	size_t index = kdtree_find_approximate(tetrapal, point);
+	v[0] = kdtree_get_vertex(tetrapal, index);
+	p[0] = get_coordinates(tetrapal, v[0]);
+
+	/* Is the query point before or after this vertex? */
+	if (point[0] < p[0][0])
 	{
-		// If we arrive at an infinite triangle, then our point lies outside the current triangulation
-		if (is_infinite_triangle(*a, *b, *c))
-			return 1;
+		if (index == 0) /* No points before it. */
+			return v[0];
 
-		// Randomly rotate indices (stochastic walk)
-		rotate_triangle(a, b, c, random_range_int(&random_state, 3));
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-		get_coordinates(tetrapal, *c, pc);
+		/* Get the closest point. */
+		v[1] = kdtree_get_vertex(tetrapal, index - 1);
+		p[1] = get_coordinates(tetrapal, v[1]);
 
-		// Reject coincident points
-		if (is_coincident(p, pa) ||
-			is_coincident(p, pb) ||
-			is_coincident(p, pc))
-			return 0;
+		coord_t distance_a = distance_squared_1d(point, p[0]);
+		coord_t distance_b = distance_squared_1d(point, p[1]);
 
-		// Test the query point against every face
-		if (orient2d_filtered(pa, pb, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *c = adjacent_triangle(tetrapal, *b, *a); swap_int(a, b); continue; }
-		if (orient2d_filtered(pb, pc, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *a = adjacent_triangle(tetrapal, *c, *b); swap_int(b, c); continue; }
-		if (orient2d_filtered(pc, pa, p, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c) < 0) { *b = adjacent_triangle(tetrapal, *a, *c); swap_int(c, a); continue; }
-
-		// If none of the faces return negative, then we have found the enclosing triangle
-		return 1;
+		return (distance_a < distance_b) ? v[0] : v[1];
 	}
-}
-
-static void consider_triangle(TetrapalData* tetrapal, int a, int b, int e)
-{
-	int c = adjacent_triangle(tetrapal, b, a);
-
-	if (c == VERTEX_NULL)
-		return;
-
-	if (check_conflict_triangle(tetrapal, b, a, c, e) > 0) {
-		delete_triangle(tetrapal, b, a, c);
-		consider_triangle(tetrapal, a, c, e);
-		consider_triangle(tetrapal, c, b, e);
-	}
-	else
-		add_triangle(tetrapal, a, b, e);
-}
-
-static int check_conflict_triangle(TetrapalData* tetrapal, int a, int b, int c, int e)
-{
-	int64_t pa[3], pb[3], pc[3], pe[3];
-	get_coordinates(tetrapal, a, pa);
-	get_coordinates(tetrapal, b, pb);
-	get_coordinates(tetrapal, c, pc);
-	get_coordinates(tetrapal, e, pe);
-
-	if (a == VERTEX_INFINITE) {
-		int orient = orient2d_filtered(pb, pc, pe, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c);
-		return orient ? orient : insegment_filtered(pb, pc, pe);
-	}
-	if (b == VERTEX_INFINITE) {
-		int orient = orient2d_filtered(pc, pa, pe, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c);
-		return orient ? orient : insegment_filtered(pc, pa, pe);
-	}
-	if (c == VERTEX_INFINITE) {
-		int orient = orient2d_filtered(pa, pb, pe, tetrapal->orient_a, tetrapal->orient_b, tetrapal->orient_c);
-		return orient ? orient : insegment_filtered(pa, pb, pe);
-	}
-
-	return incircle_filtered(pa, pb, pc, pe);
-}
-
-static void add_triangle(TetrapalData* tetrapal, int a, int b, int c)
-{
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, VERTEX_NULL }, & c);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, c, VERTEX_NULL }, & a);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { c, a, VERTEX_NULL }, & b);
-
-	// If this triangle is infinite, store the nearest finite one
-	if (a == VERTEX_INFINITE) { a = adjacent_triangle(tetrapal, c, b); swap_int(&c, &b); }
-	else if (b == VERTEX_INFINITE) { b = adjacent_triangle(tetrapal, a, c); swap_int(&a, &c); }
-	else if (c == VERTEX_INFINITE) { c = adjacent_triangle(tetrapal, b, a); swap_int(&b, &a); }
-	tetrapal->last[0] = a;
-	tetrapal->last[1] = b;
-	tetrapal->last[2] = c;
-}
-
-static void delete_triangle(TetrapalData* tetrapal, int a, int b, int c)
-{
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, VERTEX_NULL });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, c, VERTEX_NULL });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { c, a, VERTEX_NULL });
-}
-
-static int adjacent_triangle(const TetrapalData* tetrapal, int a, int b)
-{
-	const int* adjacent = hashmap_find(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, b, VERTEX_NULL });
-
-	if (!adjacent)
-		return VERTEX_NULL;
-	else
-		return *adjacent;
-}
-
-static void rotate_triangle(int* a, int* b, int* c, int rotations)
-{
-	int an, bn, cn;
-
-	// CCW rotation
-	switch (rotations % 3) {
-	case 1: an = *b; bn = *c; cn = *a; break;
-	case 2: an = *c; bn = *a; cn = *b; break;
-	default: return;
-	}
-
-	*a = an; *b = bn; *c = cn;
-}
-
-static int is_infinite_triangle(int a, int b, int c)
-{
-	return (a == VERTEX_INFINITE || b == VERTEX_INFINITE || c == VERTEX_INFINITE) ? 1 : 0;
-}
-
-// ===============================================================
-//		1D Triangulation
-// ===============================================================	
-
-static int triangulate_1d(TetrapalData* tetrapal)
-{
-	if (tetrapal->size < 2)
-		return 0;
-
-	int a = 0, b = 1;
-	int64_t pa[3], pb[3];
-	get_coordinates(tetrapal, a, pa);
-	get_coordinates(tetrapal, b, pb);
-
-	while (orient1d_filtered(pa, pb, pb) == 0)
-		if ((size_t)b < tetrapal->size - 1) get_coordinates(tetrapal, ++b, pb);
-		else return 0;
-
-	// Ensure positive orientation
-	if (orient1d_exact(pa, pb, pb) < 0)
-		swap_int(&a, &b);
-
-	add_segment(tetrapal, a, b);
-	add_segment(tetrapal, VERTEX_INFINITE, a);
-	add_segment(tetrapal, b, VERTEX_INFINITE);
-	tetrapal->dimensions = 1;
-
-	// Start incremental insertion
-	for (size_t i = 0; i < tetrapal->size; i++)
+	else if (point[0] > p[0][0]) /* After the vertex. */
 	{
-		a = tetrapal->last[0];
-		b = tetrapal->last[1];
+		if (index == tetrapal->vertices.count - 1) /* No points after it. */
+			return v[0];
 
-		int64_t pi[3];
-		get_coordinates(tetrapal, i, pi);
+		/* Get the closest point. */
+		v[1] = kdtree_get_vertex(tetrapal, index + 1);
+		p[1] = get_coordinates(tetrapal, v[1]);
 
-		if (!locate_segment(tetrapal, pi, &a, &b))
+		coord_t distance_a = distance_squared_1d(point, p[0]);
+		coord_t distance_b = distance_squared_1d(point, p[1]);
+
+		return (distance_a < distance_b) ? v[0] : v[1];
+	}
+
+	/* On the vertex. */
+	return v[0];
+}
+
+/********************************************/
+/*		0D Triangulation (Single Vertex)	*/
+/********************************************/
+
+static error_t triangulate_0d(Tetrapal* tetrapal)
+{
+	tetrapal->vertices.capacity = 1;
+	tetrapal->vertices.count = 1;
+
+	/* 'Triangulation' is done! */
+	return ERROR_NONE;
+}
+
+static size_t interpolate_0d(int indices[1], float weights[1])
+{
+	indices[0] = 0;
+	weights[0] = 1;
+	return 1;
+}
+
+static vertex_t nearest_0d()
+{
+	return 0;
+}
+
+/********************************************/
+/*		Natural Neighbour Interpolation		*/
+/********************************************/
+
+static inline error_t natural_neighbour_accumulate(vertex_t index, coord_t weight, int* indices, float* weights, int size, size_t* count)
+{
+	/* Find the index. */
+	for (size_t i = 0; i < *count; i++)
+	{
+		if (indices[i] == index)
+		{
+			weights[i] += (float)weight;
+			return ERROR_NONE;
+		}
+	}
+
+	/* Reached the buffer limit. */
+	if (*count == (size_t)size)
+		return ERROR_OUT_OF_MEMORY;
+
+	/* Add this vertex to the output array. */
+	indices[*count] = (int)index;
+	weights[*count] = (float)weight;
+	*count += 1;
+
+	return ERROR_NONE;
+}
+
+static size_t natural_neighbour_2d(const Tetrapal* tetrapal, coord_t point[2], int* indices, float* weights, int size)
+{
+	vertex_t v[3]; /* Vertex global indices. */
+	const coord_t* p[3]; /* Vertex coordinates. */
+	coord_t m[3][2]; /* Mid-points between [point] and each vertex. */
+	coord_t c[2][2]; /* Circumcentres. */
+	simplex_t t[3]; /* Simplex indices. */
+	size_t n = 0; /* Number of natural neighbours. */
+
+	/* Struct to hold enclosing simplex information. */
+	struct
+	{
+		size_t count;
+		int indices[3];
+		float weights[3];
+
+	} enclosing;
+
+	/* Struct representing the pending and previously visited simplices. */
+	struct
+	{
+		Stack pending;
+		Stack previous;
+
+	} stack;
+
+	stack.pending.data = NULL;
+	stack.previous.data = NULL;
+
+	/* Locate the enclosing simplex, projecting [p] onto the hull if it is outside. */
+	enclosing.count = interpolate_2d(tetrapal, point, enclosing.indices, enclosing.weights, &t[0]);
+
+	/* Point is outside the convex hull.*/
+	if (enclosing.count < 3)
+	{
+		for (size_t i = 0; i < enclosing.count; i++)
+		{
+			indices[i] = enclosing.indices[i];
+			weights[i] = enclosing.weights[i];
+		}
+
+		return enclosing.count;
+	}
+
+	/* Allocate memory for stacks. */
+	if (stack_init(&stack.pending, 32) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	if (stack_init(&stack.previous, 32) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	/* The enclosing simplex is necessarily in conflict. Add it to the pending stack. */
+	if (stack_insert(&stack.pending, t[0]) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	if (stack_insert(&stack.previous, SIMPLEX_NULL) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	/* Perform depth-first traversal of the conflict-zone. */
+	while (stack_is_empty(&stack.pending) == false)
+	{
+		/* Take [t0] from the top of the pending stack. */
+		t[0] = stack_top(&stack.pending);
+		stack_pop(&stack.pending);
+
+		/* Take the [t2] as the simplex we came from. */
+		t[2] = stack_top(&stack.previous);
+		stack_pop(&stack.previous);
+
+		/* Get vertex data. */
+		for (local_t i = 0; i < 3; i++)
+		{
+			v[i] = get_incident_vertex(tetrapal, t[0], i);
+			p[i] = get_coordinates(tetrapal, v[i]);
+			midpoint_2d(point, p[i], m[i]); /* Midpoint between [p] and each vertex of [t0]. */
+		}
+
+		/* Get the circumcentre of [t0]. */
+		circumcentre_2d(p[0], p[1], p[2], c[0]);
+
+		/* Check every adjacent simplex [t1] of [t0]. */
+		for (local_t e = 0; e < 3; e++)
+		{
+			t[1] = get_adjacent_simplex(tetrapal, t[0], e);
+
+			/* If we have already visited the adjacent simplex, skip it. */
+			if (t[1] == t[2])
+				continue;
+
+			/* Adjacent simplex is in conflict zone. */
+			if (is_infinite_simplex(tetrapal, t[1]) == false &&
+				conflict_2d(tetrapal, t[1], point) == true)
+			{
+				/* Get the circumcentre of [t1]. */
+				get_circumcentre(tetrapal, t[1], c[1]);
+
+				/* Add [t1] to the pending stack. */
+				if (stack_insert(&stack.pending, t[1]) != ERROR_NONE)
+					goto EXIT_ON_ERROR;
+
+				if (stack_insert(&stack.previous, t[0]) != ERROR_NONE)
+					goto EXIT_ON_ERROR;
+			}
+			else /* Adjacent simplex is outside conflict zone.*/
+			{
+				/* Get the circumcentre of the simplex formed by [p] and the boundary vertices. */
+				local_t a = edge_opposite_vertex[e][0];
+				local_t b = edge_opposite_vertex[e][1];
+				circumcentre_2d(point, p[a], p[b], c[1]);
+			}
+
+			/* For every vertex shared by [t0] and [t1], accumulate the area of the triangle formed by the mid-point and the two circumcentres. */
+			for (local_t i = 0; i < 2; i++)
+			{
+				local_t l = edge_opposite_vertex[e][i]; /* Local vertex index. */
+				coord_t area = orient_2d(m[l], c[i], c[1 - i]);
+
+				if (natural_neighbour_accumulate(v[l], area, indices, weights, size, &n) != ERROR_NONE)
+					goto EXIT_ON_ERROR;
+			}
+		}
+		/* Repeat until we have visited all conflict simplices. */
+	}
+
+	/* Free the stacks. */
+	stack_free(&stack.pending);
+	stack_free(&stack.previous);
+
+	/* Get the total weight. */
+	coord_t total = 0.0f;
+
+	for (size_t i = 0; i < n; i++)
+		total += weights[i];
+
+	/* Normalise. */
+	coord_t inverse = 1.0f / total;
+
+	for (size_t i = 0; i < n; i++)
+		weights[i] *= inverse;
+
+	return n;
+
+	/* We failed because we hit some kind of memory limit. */
+EXIT_ON_ERROR:
+	stack_free(&stack.pending);
+	stack_free(&stack.previous);
+	return 0;
+}
+
+static size_t natural_neighbour_3d(const Tetrapal* tetrapal, coord_t point[3], int* indices, float* weights, int size)
+{
+	vertex_t v[4]; /* Vertex global indices. */
+	const coord_t* p[4]; /* Vertex coordinates. */
+	coord_t m[5][3]; /* Mid-points. */
+	coord_t c[4][3]; /* Circumcentres. */
+	simplex_t t[3]; /* Current simplices. */
+	size_t n = 0; /* Number of natural neighbours. */
+
+	/* Struct to hold enclosing simplex information. */
+	struct
+	{
+		size_t count;
+		int indices[4];
+		float weights[4];
+
+	} enclosing;
+
+	/* Stacks for holding the pending simplices and conflict simplices. */
+	struct
+	{
+		Stack pending;
+		Stack conflict;
+
+	} stack;
+
+	stack.pending.data = NULL;
+	stack.conflict.data = NULL;
+
+	/* Locate the enclosing simplex, projecting [p] onto the hull if it is outside. */
+	enclosing.count = interpolate_3d(tetrapal, point, enclosing.indices, enclosing.weights, &t[0]);
+
+	/* If the point is outside the convex hull, project it and fall back to linear interpolation. */
+	if (enclosing.count < 4)
+	{
+		for (size_t i = 0; i < enclosing.count; i++)
+		{
+			indices[i] = enclosing.indices[i];
+			weights[i] = enclosing.weights[i];
+		}
+
+		return enclosing.count;
+	}
+
+	/* Allocate memory for stacks. */
+	if (stack_init(&stack.pending, 32) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	if (stack_init(&stack.conflict, 32) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	/* The enclosing simplex is necessarily in conflict. Add it to the pending stack. */
+	if (stack_insert(&stack.pending, t[0]) != ERROR_NONE)
+		goto EXIT_ON_ERROR;
+
+	/* Perform depth-first traversal of the conflict-zone. */
+	while (stack_is_empty(&stack.pending) == false)
+	{
+		/* Take [t0] from the top of the pending stack. */
+		t[0] = stack_top(&stack.pending);
+		stack_pop(&stack.pending);
+
+		/* If we have already visited the simplex, skip it. */
+		if (stack_contains(&stack.conflict, t[0]) == true)
 			continue;
 
-		delete_segment(tetrapal, a, b);
-		add_segment(tetrapal, a, i);
-		add_segment(tetrapal, i, b);
+		/* Check every adjacent simplex [t1] of [t0]. */
+		for (local_t f = 0; f < 4; f++)
+		{
+			t[1] = get_adjacent_simplex(tetrapal, t[0], f);
+
+			/* Is in conflict zone. Make sure we don't add any infinite conflict simplices. */
+			if (is_infinite_simplex(tetrapal, t[1]) == false &&
+				conflict_3d(tetrapal, t[1], point) == true)
+			{
+				/* Add [t1] to the pending stack. */
+				if (stack_insert(&stack.pending, t[1]) != ERROR_NONE)
+					goto EXIT_ON_ERROR;
+
+				continue;
+			}
+		}
+
+		/* Mark [t] as visited. */
+		if (stack_insert(&stack.conflict, t[0]) != ERROR_NONE)
+			goto EXIT_ON_ERROR;
 	}
 
-	// Build the vertex graph by iterating through the adjacency map
-	for (size_t i = 0; i < hashmap_size(tetrapal->adjacency); i++)
+	/* Visit each conflict simplex [t0]. */
+	for (size_t i = 0; i < stack.conflict.count; i++)
 	{
-		const TetrapalAdjacencyKey* key = hashmap_get_key(tetrapal->adjacency, i);
-		const int* vertex = hashmap_get_value(tetrapal->adjacency, i);
+		t[0] = stack.conflict.data[i];
 
-		graph_insert(tetrapal->graph, key->a, *vertex);
+		/* Get the data for this simplex. */
+		for (local_t f = 0; f < 4; f++)
+		{
+			/* Get vertex data. */
+			v[f] = get_incident_vertex(tetrapal, t[0], f);
+			p[f] = get_coordinates(tetrapal, v[f]);
+
+			/* Get the mid-point between [p] and each vertex. */
+			midpoint_3d(point, p[f], m[f]);
+		}
+
+		/* Get the circumcentre [c0] of [t0]. */
+		circumcentre_3d(p[0], p[1], p[2], p[3], c[0]);
+
+		/* Check every adjacent simplex [t1] of [t0]. */
+		for (local_t f = 0; f < 4; f++)
+		{
+			t[1] = get_adjacent_simplex(tetrapal, t[0], f);
+
+			/* [t1] is a conflict simplex. */
+			if (stack_contains(&stack.conflict, t[1]) == true)
+			{
+				/* Get the circumcentre [c1] of [t1]. */
+				get_circumcentre(tetrapal, t[1], c[1]);
+
+				/* For each vertex of the internal facet. */
+				for (local_t j = 0; j < 3; j++)
+				{
+					/* [a, b] is the current directed edge of the facet wrt [t0]. */
+					local_t a = facet_opposite_vertex[f][(j + 0) % 3];
+					local_t b = facet_opposite_vertex[f][(j + 1) % 3];
+
+					/* Get the mid-point of this edge. */
+					midpoint_3d(p[a], p[b], m[4]);
+
+					/* Accumulate the volume for [a]. */
+					coord_t volume = orient_3d(c[0], c[1], m[a], m[4]);
+
+					if (natural_neighbour_accumulate(v[a], volume, indices, weights, size, &n) != ERROR_NONE)
+						goto EXIT_ON_ERROR;
+				}
+			}
+			else /* [t1] is a boundary simplex. */
+			{
+				/* Get the circumcentre [c1] of the tetrahedron formed by [p] and the boundary facet. */
+				circumcentre_3d(
+					point,
+					p[facet_opposite_vertex[f][0]],
+					p[facet_opposite_vertex[f][1]],
+					p[facet_opposite_vertex[f][2]],
+					c[1]);
+
+				/* For each vertex of the internal facet. */
+				for (local_t j = 0; j < 3; j++)
+				{
+					/* [a, b] is the current directed edge of the facet wrt [t0]. */
+					local_t a = facet_opposite_vertex[f][(j + 0) % 3];
+					local_t b = facet_opposite_vertex[f][(j + 1) % 3];
+
+					/* Get the mid-point of this edge. */
+					midpoint_3d(p[a], p[b], m[4]);
+
+					/* Get the next simplex [t2] around this edge towards the conflict zone. */
+					t[1] = t[0];
+					local_t f2;
+
+					/* Rotate around [a, b] until we reach another boundary facet. */
+					while (true)
+					{
+						/* Get the next simplex [t2] around this edge towards the conflict zone. */
+						f2 = find_facet_from_edge(tetrapal, t[1], v[b], v[a]);
+						t[2] = get_adjacent_simplex(tetrapal, t[1], f2);
+
+						/* Determine whether [t2] is a boundary simplex.*/
+						if (stack_contains(&stack.conflict, t[2]) == false)
+							break;
+
+						/* If we didn't, continue rotating. */
+						t[1] = t[2];
+					}
+
+					/* Get the circumcentres [c2] and [c3]. */
+					get_circumcentre(tetrapal, t[1], c[2]);
+
+					circumcentre_3d(
+						point,
+						get_coordinates(tetrapal, get_incident_vertex(tetrapal, t[1], facet_opposite_vertex[f2][0])),
+						get_coordinates(tetrapal, get_incident_vertex(tetrapal, t[1], facet_opposite_vertex[f2][1])),
+						get_coordinates(tetrapal, get_incident_vertex(tetrapal, t[1], facet_opposite_vertex[f2][2])),
+						c[3]);
+
+					/* Accumulate the volume for [a]. */
+					coord_t volume = 0;
+					volume += orient_3d(c[1], c[0], m[4], m[a]);
+					volume += orient_3d(c[2], c[3], m[4], m[a]);
+					volume += orient_3d(c[1], c[3], m[a], m[4]);
+
+					if (natural_neighbour_accumulate(v[a], volume, indices, weights, size, &n) != ERROR_NONE)
+						goto EXIT_ON_ERROR;
+				}
+			}
+		}
 	}
 
-	// Build spatial grid
-	spatialgrid_build(tetrapal);
+	/* Free the stacks. */
+	stack_free(&stack.pending);
+	stack_free(&stack.conflict);
 
-	return 1;
+	/* Normalise. */
+	coord_t total = 0;
+
+	for (size_t i = 0; i < n; i++)
+		total += weights[i];
+
+	coord_t inverse = 1.0f / total;
+
+	for (size_t i = 0; i < n; i++)
+		weights[i] *= inverse;
+
+	return n;
+
+	/* We failed because we hit some kind of memory limit. */
+EXIT_ON_ERROR:
+	stack_free(&stack.pending);
+	stack_free(&stack.conflict);
+	return 0;
 }
-
-static int locate_segment(TetrapalData* tetrapal, int64_t p[3], int* a, int* b)
-{
-	int64_t pa[3], pb[3];
-
-	while (1)
-	{
-		// If we arrive at an infinite segment, then our point lies beyond the boundary vertex
-		if (is_infinite_segment(*a, *b))
-			return 1;
-
-		get_coordinates(tetrapal, *a, pa);
-		get_coordinates(tetrapal, *b, pb);
-
-		// Reject coincident points
-		if (is_coincident(p, pa) ||
-			is_coincident(p, pb))
-			return 0;
-
-		// Test the query point against both sides of the line
-		if (orient1d_filtered(pa, pb, p) < 0) { *b = adjacent_segment(tetrapal, *a, VERTEX_PREV); swap_int(a, b); continue; }
-		if (orient1d_filtered(pb, pa, p) < 0) { *a = adjacent_segment(tetrapal, *b, VERTEX_NEXT); swap_int(a, b); continue; }
-
-		// If none of the faces return negative, then we have found the enclosing segment
-		return 1;
-	}
-}
-
-static void add_segment(TetrapalData* tetrapal, int a, int b)
-{
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, VERTEX_NEXT, VERTEX_NULL }, & b);
-	hashmap_insert(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, VERTEX_PREV, VERTEX_NULL }, & a);
-
-	// If this segment is infinite, store the nearest finite one
-	if (a == VERTEX_INFINITE) { a = adjacent_segment(tetrapal, b, VERTEX_NEXT); swap_int(&a, &b); }
-	else if (b == VERTEX_INFINITE) { b = adjacent_segment(tetrapal, a, VERTEX_PREV); swap_int(&a, &b); }
-	tetrapal->last[0] = a;
-	tetrapal->last[1] = b;
-}
-
-static void delete_segment(TetrapalData* tetrapal, int a, int b)
-{
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, VERTEX_NEXT, VERTEX_NULL });
-	hashmap_remove(tetrapal->adjacency, &(TetrapalAdjacencyKey) { b, VERTEX_PREV, VERTEX_NULL });
-}
-
-static int adjacent_segment(const TetrapalData* tetrapal, int a, TetrapalEnum direction)
-{
-	// Direction must be valid
-	if (direction != VERTEX_NEXT && direction != VERTEX_PREV)
-		return VERTEX_NULL;
-
-	const int* adjacent = hashmap_find(tetrapal->adjacency, &(TetrapalAdjacencyKey) { a, direction, VERTEX_NULL });
-
-	if (!adjacent)
-		return VERTEX_NULL;
-	else
-		return *adjacent;
-}
-
-static int is_infinite_segment(int a, int b)
-{
-	return (a == VERTEX_INFINITE || b == VERTEX_INFINITE) ? 1 : 0;
-}
-
-/*
-	MIT License
-
-	Copyright (c) 2023 matejlou
-
-	Permission is hereby granted, free of charge, to any person obtaining a copy
-	of this software and associated documentation files (the "Software"), to deal
-	in the Software without restriction, including without limitation the rights
-	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-	copies of the Software, and to permit persons to whom the Software is
-	furnished to do so, subject to the following conditions:
-
-	The above copyright notice and this permission notice shall be included in all
-	copies or substantial portions of the Software.
-
-	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-	SOFTWARE.
-*/
