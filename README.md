@@ -18,70 +18,87 @@ The idea to use a 3D triangulated irregular network as a means to dither colour 
 
 # How to Use
 
-To create a new tessellation from an existing palette simply call the following function:
+## New Triangulation
 
 ```c
-TetrapalData* tetrapal_new(const float *points, const int size);
+Tetrapal* tetrapal_new(const float *points, const int size);
 ```
 
-The parameter `*points` should be a pointer to a buffer of 3D coordinates in the following format:
+Creates a new tessellation from an existing palette. The parameter `*points` should be a pointer to a buffer of 3D coordinates in the following format:
 
 $$\Huge{[x_0, y_0, z_0, x_1, y_1, z_1, ... x_{size-1}, y_{size-1}, z_{size-1]}}$$
 
-Where `size` is the number of 3D points represented in the buffer. Internally, points are indexed according to their order in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`. The values in `*points` should be normalised between 0.0 to 1.0; values beyond this range will be clamped.
+Where `size` is the number of points represented in the buffer. Internally, points are indexed according to their order in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`. The values in `*points` should be normalised between 0.0 to 1.0; values beyond this range will be clamped.
 
-Remember to free the triangulation data when you are done via:
-
-```c
-void tetrapal_free(TetrapalData* tetrapal);
-```
-
----
-
-To interpolate within a tessellation, pass the `TetrapalData` pointer to the function below:
+## Free Triangulation
 
 ```c
-int tetrapal_interpolate(const TetrapalData* tetrapal, const float point[3], int* a, int* b, int* c, int* d, double* u, double* v, double* w, double* x);
+void tetrapal_free(Tetrapal* tetrapal);
 ```
 
-This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant defined by `point[3]`. The indices of the points will be written to the values at `*a`, `*b`, `*c`, and `*d`, and their weights written to `*u`, `*v`, `*w`, `*x`, respectively. In the case where the number of points $N$ is less than 4, the unused indices/weights will be set to 0 and the first $N$ return values will contain the valid indices. For example, a return value of 2 means that the values at `*a`, `*b`, `*u`, and `*v` will contain the contributing indices and their weights, while the values at `*c`, `*d`, `*w`, and `*x` will be set to 0.
+Triangulation data can be safely freed at any time by passing the `Tetrapal` pointer to the above function.
 
----
-
-Tetrapal also supports nearest-neighbour queries within the tessellation. This can be faster than a standard linear search under the right circumstances. It is included for convenience:
+## Interpolation
+### Barycentric Interpolation
 
 ```c
-int tetrapal_nearest_neighbour(const TetrapalData* tetrapal, const float point[3]);
+int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights);
 ```
+
+Performs barycentric interpolation within a tessellation. This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant given by `point[3]`. The indices of the points will be written to the values at `*indices`, and their respective weights written to `*weights`. In the case where the number of points $N$ is less than 4, only the first $N$ values in each output array will be written.
+
+### Natural Neighbour Interpolation
+
+```c
+int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights, const int size);
+```
+
+In addition to standard barycentric interplation, Tetrapal is able to perform [natural neighbour interpolation](https://en.wikipedia.org/wiki/Natural_neighbor_interpolation) as well. This function returns an `int` specifiying the number of natural neighbours contributing to the interpolant given by `point[3]`. The size of the output arrays `*indices` and `*weights` should be given by the parameter `size`. It is possible for this function to fail, either due to a lack of available system memory or because the number of natural neighbours exceeds the size of the output arrays. In both cases, the function will return 0. 
+
+In theory number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to guarantee success it is advised to ensure that the output arrays are at least as large as the number of vertices in the triangulation.
+
+### Nearest Neighbour Interpolation
+
+```c
+int tetrapal_nearest_neighbour(const Tetrapal* tetrapal, const float point[3]);
+```
+
+Tetrapal also supports nearest-neighbour queries within the tessellation. This can be faster than a standard linear search under the right circumstances. It is included for convenience.
 
 Returns the index of the nearest neighbour to the query point defined by `point[3]`.
 
----
-
-Also included are a number of functions that can provide useful information about the tessellation itself:
-
-```c
-int tetrapal_number_of_dimensions(const TetrapalData* tetrapal);
-int tetrapal_number_of_vertices(const TetrapalData* tetrapal);
-int tetrapal_number_of_segments(const TetrapalData* tetrapal);
-int tetrapal_number_of_triangles(const TetrapalData* tetrapal);
-int tetrapal_number_of_tetrahedra(const TetrapalData* tetrapal);
-```
-
-Important to note is that segments shared across different triangles are only counted once, i.e. the edges [_a_, _b_] and [_b_, _a_] count as a single segment. Likewise, the triangles [_a_, _b_, _c_] and [_c_, _b_, _a_] count as one triangle. This information is cached immediately after triangulation so there is no processing overhead in calling these functions.
-
----
-
-It is possible to write geometry data directly into buffers provided by the user, where each element is represented by a set of vertex indices (or in the case of `tetrapal_get_vertices`, a single index):
+## Utility Functions
+### Number of Elements
 
 ```c
-int tetrapal_get_vertices(const TetrapalData* tetrapal, int* buffer);
-int tetrapal_get_segments(const TetrapalData* tetrapal, int* buffer);
-int tetrapal_get_triangles(const TetrapalData* tetrapal, int* buffer);
-int tetrapal_get_tetrahedra(const TetrapalData* tetrapal, int* buffer);
+int tetrapal_number_of_elements(const Tetrapal* tetrapal);
 ```
 
-For all functions, the size of `*buffer` must be _no less_ than the number of elements present in the triangulation multiplied by the number of indices representing each element. For example, to use `tetrapal_get_triangles` correctly the size of `*buffer` must be no smaller than `tetrapal_number_of_triangles` × 3. All functions will return non-zero on failure.
+Returns the number of real elements in the triangulation, i.e. does not count symbolic 'infinite' elements.
+
+### Number of Dimensions
+
+```c
+int tetrapal_number_of_dimensions(const Tetrapal* tetrapal);
+```
+
+Returns the number of dimensions spanned by the triangulation. This can range anywhere from 0 to 3. A value of -1 indicates a null triangulation.
+
+### Element Size
+
+```c
+int tetrapal_element_size(const Tetrapal* tetrapal);
+```
+
+Gets the size of an element in the triangulation, or in other words, the number of vertices that make up a simplex within the triangulation. This is the same as `tetrapal_number_of_dimensions` + 1.
+
+### Get Elements
+
+```c
+int tetrapal_get_elements(const Tetrapal* tetrapal, int* buffer);
+```
+
+Writes raw geometry data directly into `*buffer`. Every element is represented by a set of vertex indices, and these are packed contiguously into the buffer. Thus, the size of the buffer must be _no less_ than the number of elements present in the triangulation multiplied by the number of indices representing each element, or `tetrapal_number_of_elements` × `tetrapal_element_size`.
 
 # Example Usage
 
@@ -118,9 +135,7 @@ void dither_image(const float *input, const int image_width, const int image_hei
       const float* pixel = &input[image_index * 3];
 
       // Interpolate within the triangulation to get the candidates for the current pixel and their weights
-      tetrapal_interpolate(tetrapal, pixel,
-        &candidates[0], &candidates[1], &candidates[2], &candidates[3],
-        &weights[0], &weights[1], &weights[2], &weights[3]);
+      tetrapal_interpolate(tetrapal, pixel, candidates, weights);
 
       // Sort the candidates by luminance
       sort_by_luminance(candidates, weights, palette);
