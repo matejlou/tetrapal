@@ -28,7 +28,9 @@ Creates a new tessellation from an existing palette. The parameter `*points` sho
 
 $$\Huge{[x_0, y_0, z_0, x_1, y_1, z_1, ... x_{size-1}, y_{size-1}, z_{size-1]}}$$
 
-Where `size` is the number of points represented in the buffer. Internally, points are indexed according to their order in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`. The values in `*points` should be normalised between 0.0 to 1.0; values beyond this range will be clamped.
+Where `size` is the number of points represented in the buffer. Internally, points are indexed according to the order they appear in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`.
+
+Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond this range will be clamped. Coordinates are then transformed and represented as integers with 16 bits of precision.
 
 ## Free Triangulation
 
@@ -123,7 +125,7 @@ void dither_image(const float *input, const int image_width, const int image_hei
   double weights[4];
 
   // Triangulate the palette
-  TetrapalData* tetrapal = tetrapal_new(palette, palette_size);
+  Tetrapal* tetrapal = tetrapal_new(palette, palette_size);
 
   // Iterate over pixels in the input image
   for (int y = 0; y < image_height; y++)
@@ -165,35 +167,40 @@ void dither_image(const float *input, const int image_width, const int image_hei
 
 # Implementation
 
-At its core, Tetrapal is an implementation of 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). Tetrapal borrows ideas from computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). A combination of extended precision integer arithmetic and static filtering via [interval arithmetic](https://en.wikipedia.org/wiki/Interval_arithmetic) is used to provide robustness for geometric predicates in cases where standard floating point arithmetic can fail to give an accurate result.
+Tetrapal implementations 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). It borrows ideas from computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). Coincident points are ignored during triangulation but are still stored internally to maintain consistency when returning vertex indices. 
 
-Tetrapal supports linear interpolation of points inside the convex hull by locating the enclosing tetrahedron and computing the 3D barycentric coordinates with respect to the query point (in lower-dimensional triangulations the barycentric coordinates are taken from the enclosing line segment or triangle). Points that lie outside the convex hull of the triangulation are projected onto the closest triangle/segment/vertex on the surface and the barycentric coordinates are taken from it instead.
+A combination of extended precision integer arithmetic and static filtering via predetermined error bounds is used to provide robustness for geometric predicates in cases where standard arithmetic may fail to give an accurate result.
 
-Point location is performed via stochastic walk[^4], and [spatial indexing](https://en.wikipedia.org/wiki/Grid_(spatial_index)) is used to quickly locate a starting tetrahedron that is close enough to the query point.
+Tetrapal supports barycentric interpolation of points inside the convex hull by locating the enclosing simplex and computing the barycentric coordinates with respect to the query point. Any point that lies outside the convex hull of the triangulation is projected onto the closest point on the surface and the barycentric coordinates are taken from the surface element instead, which may be a triangle, line segment, or single vertex. Natural-neighbour interpolation with Sibson weights is also supported in 2D and 3D, but only for points that lie within the convex hull (otherwise they will be treated as described before).
+
+Point location is performed via remembering stochastic walk[^4], where a kd-tree approximate nearest neighbour search is used to quickly locate a starting tetrahedron that is close to the query point.
 
 As its main purpose is to process colour palettes, some assumptions have been made to simplify the algorithm. However, Tetrapal can still be used as a general-purpose Delaunay triangulation library provided its limitations are observed. These include:
-* That it is unoptimised compared to more mature Delaunay triangulation libraries, especially for large numbers of points.
 * That it expects the input to be normalised between 0.0 and 1.0.
-* That the desired precision of the input does not exceed 1 / 16,777,216.
+* That the desired precision of the input does not exceed 1 / 65535.
 
 # Performance & Comparison
 
-The three tables below compare the running time of a Tetrapal-based ordered dithering algorithm against the more well-known algorithms of Thomas Knoll[^2] and Joel Yliluoma[^3]. A different independent variable was chosen for each test (palette size, threshold matrix size, and input image size, respectively). The "_Yliluoma's ordered dithering algorithm 2_" variant of Yliluoma's algorithms was implemented for all tests. The construction of the Tetrapal data structure itself is included in the timings. All image/palette colours were transformed to linearised sRGB space prior to processing.
+The three tables below compare the running time of a Tetrapal-based ordered dithering algorithm against the more well-known algorithms of Thomas Knoll[^2] and Joel Yliluoma[^3]. A different independent variable was chosen for each test (palette size, threshold matrix size, and input image size, respectively). The "_Yliluoma's ordered dithering algorithm 2_" variant of Yliluoma's algorithms was implemented. The construction of the Tetrapal data structure itself is included in the timings, and barycentric interpolaton was used for all tests. All image/palette colours were transformed to linearised sRGB space prior to processing.
 
 | Palette Size | Tetrapal   | Knoll   | Yliluoma | | Matrix Size | Tetrapal | Knoll   | Yliluoma  | | Image Size | Tetrapal | Knoll   | Yliluoma  |
 | :--          | :-:        | :-:     | :-:      |-| :--         | :-:      | :-:     | :-:       |-| :--        | :-:      | :-:     | :-:       |
-| 8            | 0.246s     | 0.830s  | 6.923s   | | 2x2         | 0.238s   | 0.100s  | 0.364s    | | 128x128    | 0.021s   | 0.092s  | 1.089s    |
-| 16           | 0.246s     | 1.457s  | 14.837s  | | 4x4         | 0.211s   | 0.392s  | 2.882s    | | 256x256    | 0.049s   | 0.365s  | 4.226s    |
-| 32           | 0.266s     | 2.733s  | 30.529s  | | 8x8         | 0.207s   | 1.494s  | 17.032s   | | 512x512    | 0.144s   | 1.455s  | 16.587s   |
-| 64           | 0.318s     | 5.240s  | 61.521s  | | 16x16       | 0.205s   | 5.676s  | 92.412s   | | 1024x1024  | 0.523s   | 5.658s  | 65.638s   |
-| 128          | 0.408s     | 10.194s | 126.047s | | 32x32       | 0.204s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
-| 256          | 0.467s     | 20.072s | 257.878s | | 64x64       | 0.200s   | 88.046s | 2297.365s | | 4096x4096  | 8.272s   | 87.802s | 1056.591s |
+| 8            | 0.091s     | 0.830s  | 6.923s   | | 2x2         | 0.238s   | 0.100s  | 0.364s    | | 128x128    | 0.021s   | 0.092s  | 1.089s    |
+| 16           | 0.133s     | 1.457s  | 14.837s  | | 4x4         | 0.211s   | 0.392s  | 2.882s    | | 256x256    | 0.049s   | 0.365s  | 4.226s    |
+| 32           | 0.146s     | 2.733s  | 30.529s  | | 8x8         | 0.207s   | 1.494s  | 17.032s   | | 512x512    | 0.144s   | 1.455s  | 16.587s   |
+| 64           | 0.166s     | 5.240s  | 61.521s  | | 16x16       | 0.205s   | 5.676s  | 92.412s   | | 1024x1024  | 0.523s   | 5.658s  | 65.638s   |
+| 128          | 0.178s     | 10.194s | 126.047s | | 32x32       | 0.204s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
+| 256          | 0.186s     | 20.072s | 257.878s | | 64x64       | 0.200s   | 88.046s | 2297.365s | | 4096x4096  | 8.272s   | 87.802s | 1056.591s |
 
-Tetrapal is faster in almost all cases and scales far better with both the palette size and threshold matrix size. This is because both Knoll and Yliluoma repeatedly iterate over the entire palette in order to fill an array of size $N$ with candidates, which is then sampled according to the value in the threshold matrix for the current pixel. For optimal results it is necessary that $N$ be equal to the number of elements in the threshold matrix, owing to the decrease in performance. Because Tetrapal determines candidates geometrically, the size of the threshold matrix does not matter. The palette size also has less of an impact on performance due to the nature of the triangulation and point location routines.
+Tetrapal is faster in almost all cases. This is because both Knoll and Yliluoma are iterative algorithms whose time complexity is a factor of both the palette size $n$ as well as the number of candidates $m$ per pixel, which for optimal results is typically proportional to the size of the threshold matrix. Tetrapal's time complexity is bounded by its point location routine, which is shown to have an expected running time of $O(n^{1/4})$[^5]. The table below shows the theoretical worst-case time complexity for each algorithm.
+
+| Algorithm  | Tetrapal       | Knoll         | Yliluoma     |
+| :--        | :-:            | :-:           | :-:          |
+| Complexity | $O(n^{1/4})$   | $O(nm)$       | $O(nmlogn)$  |
 
 ---
 
-This table shows the [peak signal-to-noise ratio](https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio) (PSNR) for the output of each algorithm as a rough estimate of the dither quality (higher is better). A Gaussian blur was applied to the dithered output images before measuring the PSNR. Two different 16-colour palettes were tested for each image; a custom palette by Andrew Kensler[^5] that remained the same for all images, and an [adaptive palette](https://en.wikipedia.org/wiki/List_of_software_palettes#Adaptive_palettes)  generated using a variance-based colour quantisation algorithm by Xiaolin Wu[^6].
+This table shows the [peak signal-to-noise ratio](https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio) (PSNR) for the output of each algorithm as a rough estimate of the dither quality (higher is better). A Gaussian blur was applied to the dithered output images before measuring the PSNR. Two different 16-colour palettes were tested for each image; a custom palette by Andrew Kensler[^6] that remained the same for all images, and an [adaptive palette](https://en.wikipedia.org/wiki/List_of_software_palettes#Adaptive_palettes)  generated using a variance-based colour quantisation algorithm by Xiaolin Wu[^7].
 
 | Image              | Tetrapal | Knoll    | Yliluoma | Palette |
 | :--                | :-:      | :-:      | :-:      |-|
@@ -232,9 +239,12 @@ Finally, here is a visual comparison between the dithered output of Tetrapal, Kn
 
 [^4]: O. Devillers, S. Pion and M. Teillaud, "[_Walking in a Triangulation_"](https://inria.hal.science/inria-00102194/document) (2006).
 
-[^5]: A. Kensler, ["_Pixel Art Palettes for Free_"](http://eastfarthing.com/blog/2016-05-06-palette/) (2016).
+[^5]: E. P. Mücke, I. Saias and B. Zhu, "_Fast randomized point location without preprocessing in two- and
+three-dimensional Delaunay triangulations_" (1998).
 
-[^6]: X. Wu, "_Efficient Statistical Computations For Optimal Colour Quantisation_" (1995).
+[^6]: A. Kensler, ["_Pixel Art Palettes for Free_"](http://eastfarthing.com/blog/2016-05-06-palette/) (2016).
 
-[^7]: J. Shewchuk, ["_Adaptive Precision Floating-Point Arithmetic
+[^7]: X. Wu, "_Efficient Statistical Computations For Optimal Colour Quantisation_" (1995).
+
+[^8]: J. Shewchuk, ["_Adaptive Precision Floating-Point Arithmetic
 and Fast Robust Geometric Predicates_"](https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf) (1997).
