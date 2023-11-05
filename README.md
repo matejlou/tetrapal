@@ -167,7 +167,7 @@ void dither_image(const float *input, const int image_width, const int image_hei
 
 # Implementation
 
-Tetrapal implementations 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). It borrows ideas from computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). Coincident points are ignored during triangulation but are still stored internally to maintain consistency when returning vertex indices. 
+Tetrapal implements 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). It borrows ideas from computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). Coincident points are ignored during triangulation but are still stored internally to maintain consistency when returning vertex indices. 
 
 A combination of extended precision integer arithmetic and static filtering via predetermined error bounds is used to provide robustness for geometric predicates in cases where standard arithmetic may fail to give an accurate result.
 
@@ -185,18 +185,18 @@ The three tables below compare the running time of a Tetrapal-based ordered dith
 
 | Palette Size | Tetrapal   | Knoll   | Yliluoma | | Matrix Size | Tetrapal | Knoll   | Yliluoma  | | Image Size | Tetrapal | Knoll   | Yliluoma  |
 | :--          | :-:        | :-:     | :-:      |-| :--         | :-:      | :-:     | :-:       |-| :--        | :-:      | :-:     | :-:       |
-| 8            | 0.091s     | 0.830s  | 6.923s   | | 2x2         | 0.238s   | 0.100s  | 0.364s    | | 128x128    | 0.021s   | 0.092s  | 1.089s    |
-| 16           | 0.133s     | 1.457s  | 14.837s  | | 4x4         | 0.211s   | 0.392s  | 2.882s    | | 256x256    | 0.049s   | 0.365s  | 4.226s    |
-| 32           | 0.146s     | 2.733s  | 30.529s  | | 8x8         | 0.207s   | 1.494s  | 17.032s   | | 512x512    | 0.144s   | 1.455s  | 16.587s   |
-| 64           | 0.166s     | 5.240s  | 61.521s  | | 16x16       | 0.205s   | 5.676s  | 92.412s   | | 1024x1024  | 0.523s   | 5.658s  | 65.638s   |
-| 128          | 0.178s     | 10.194s | 126.047s | | 32x32       | 0.204s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
-| 256          | 0.186s     | 20.072s | 257.878s | | 64x64       | 0.200s   | 88.046s | 2297.365s | | 4096x4096  | 8.272s   | 87.802s | 1056.591s |
+| 8            | 0.091s     | 0.830s  | 6.923s   | | 2x2         | ----s   | 0.100s  | 0.364s    | | 128x128    | 0.010s   | 0.092s  | 1.089s    |
+| 16           | 0.133s     | 1.457s  | 14.837s  | | 4x4         | 0.140s   | 0.392s  | 2.882s    | | 256x256    | 0.038s   | 0.365s  | 4.226s    |
+| 32           | 0.146s     | 2.733s  | 30.529s  | | 8x8         | 0.122s   | 1.494s  | 17.032s   | | 512x512    | 0.146s   | 1.455s  | 16.587s   |
+| 64           | 0.166s     | 5.240s  | 61.521s  | | 16x16       | 0.128s   | 5.676s  | 92.412s   | | 1024x1024  | 0.523s   | 5.658s  | 65.638s   |
+| 128          | 0.178s     | 10.194s | 126.047s | | 32x32       | 0.124s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
+| 256          | 0.186s     | 20.072s | 257.878s | | 64x64       | 0.129s   | 88.046s | 2297.365s | | 4096x4096  | 8.272s   | 87.802s | 1056.591s |
 
 Tetrapal is faster in almost all cases. This is because both Knoll and Yliluoma are iterative algorithms whose time complexity is a factor of both the palette size $n$ as well as the number of candidates $m$ per pixel, which for optimal results is typically proportional to the size of the threshold matrix. Tetrapal's time complexity is bounded by its point location routine, which is shown to have an expected running time of $O(n^{1/4})$[^5]. The table below shows the theoretical worst-case time complexity for each algorithm.
 
-| Algorithm  | Tetrapal       | Knoll         | Yliluoma     |
-| :--        | :-:            | :-:           | :-:          |
-| Complexity | $O(n^{1/4})$   | $O(nm)$       | $O(nmlogn)$  |
+| Algorithm      | Tetrapal       | Knoll         | Yliluoma     |
+| :--            | :-:            | :-:           | :-:          |
+| **Complexity** | $O(n^{1/4})$   | $O(nm)$       | $O(nmlogn)$  |
 
 ---
 
@@ -219,17 +219,17 @@ This next table records the size in memory of the Tetrapal data structure for va
 
 | Palette Size | 8     | 16    | 32    | 64    | 128   | 256   |
 | :--          | :-:   | :-:   | :-:   | :-:   | :-:   | :-:   | 
-| **Memory**   | 75KB  | 95KB  | 132KB | 256KB | 445KB | 835KB |
+| **Memory**   | 2KB   | 4KB   | 8KB   | 16KB  | 32KB  | 64KB  |
 
 ---
 
 Finally, here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output is virtually identical to Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
 
-| Algorithm | Test Image 1 | Test Image 2 |
-| :-:       | :-:      | :-: |
-| Tetrapal  |![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/f3770dee-6aab-4e01-865c-20c98172656d)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/4958488d-ee14-434d-8a5b-b4c71b410638)|
-| Knoll     |![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/ec6dd924-d308-47e8-851a-23a4e8775bcf)|![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/26de6284-d730-42cc-812a-f871872d2ef0)|
-| Standard  |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/280ea9c6-d8df-42df-b86d-88e83a472663)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/5fc44c0f-18b5-4b6c-b3e0-2acfc5b9ba8d)|
+| Algorithm     | Test Image 1 | Test Image 2 |
+| :-:           | :-:      | :-: |
+| **Tetrapal**  |![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/f3770dee-6aab-4e01-865c-20c98172656d)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/4958488d-ee14-434d-8a5b-b4c71b410638)|
+| **Knoll**     |![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/ec6dd924-d308-47e8-851a-23a4e8775bcf)|![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/26de6284-d730-42cc-812a-f871872d2ef0)|
+| **Standard**  |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/280ea9c6-d8df-42df-b86d-88e83a472663)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/5fc44c0f-18b5-4b6c-b3e0-2acfc5b9ba8d)|
 
 [^1]: E. Gröller and W. Purgathofer, "_Using tetrahedrons for dithering color pictures_" (1988).
 
