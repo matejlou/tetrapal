@@ -10,9 +10,9 @@ Tetrapal is shorthand for _tetrahedral palette_. It is a utility that takes a se
 
 The main motivation behind this library is to enable an efficient implementation of colour image [ordered dithering](https://en.wikipedia.org/wiki/Ordered_dithering) for irregular palettes. Typically, ordered dithering is only optimal when the palette contains colours that are equally distributed in colour space, i.e. that they form a regular grid. However, the algorithm can be modified to accommodate irregular or arbitrary palettes by representing input colours as the weighted sum of a number of existing palette colours. Tetrapal provides a data structure that can determine the necessary weights much faster and with more precision than existing implementations.
 
-| Palette | Original Image | Typical Algorithm | Tetrapal Algorithm |
-|-|-|-|-|
-|![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/56246eaf-62ab-4484-82be-44b6c2df3700)|![dog256](https://github.com/matejlou/Tetrapal/assets/120740455/bd7d0c22-e946-49e4-bf01-2133687cc553)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
+| Palette | Typical Algorithm | Tetrapal Algorithm |
+|-|-|-|
+|![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/56246eaf-62ab-4484-82be-44b6c2df3700)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
 
 The idea to use a 3D triangulated irregular network as a means to dither colour images is not a new one. The earliest source I could find that describes such an implementation is the 1988 article "_Using tetrahedrons for dithering color pictures_" by Eduard Gröller and Werner Purgathofer[^1]. However, the technique remains relatively unknown and unused in common practice, at least on the web. To my knowledge, this repository is the first and only public implementation available online.
 
