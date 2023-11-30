@@ -24,13 +24,13 @@ The idea to use a 3D triangulated irregular network as a means to dither colour 
 Tetrapal* tetrapal_new(const float *points, const int size);
 ```
 
-Creates a new tessellation from an existing palette. The parameter `*points` should be a pointer to a buffer of 3D coordinates in the following format:
+Creates a new triangulation from an existing palette. The parameter `*points` should be a pointer to a buffer of 3D coordinates in the following format:
 
 $$\Huge{[x_0, y_0, z_0, x_1, y_1, z_1, ... x_{size-1}, y_{size-1}, z_{size-1]}}$$
 
 Where `size` is the number of points represented in the buffer. Internally, points are indexed according to the order they appear in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`.
 
-Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond this range will be clamped. Coordinates are then transformed and represented as integers with 16 bits of precision.
+Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond this range will be clamped. Internally, coordinates are transformed and represented as integers with 16 bits of precision.
 
 ## Free Triangulation
 
@@ -38,7 +38,7 @@ Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond 
 void tetrapal_free(Tetrapal* tetrapal);
 ```
 
-Triangulation data can be safely freed at any time by passing the `Tetrapal` pointer to the above function.
+Triangulation data can be safely freed by passing the `Tetrapal` pointer to the above function.
 
 ## Interpolation
 ### Barycentric Interpolation
@@ -47,7 +47,9 @@ Triangulation data can be safely freed at any time by passing the `Tetrapal` poi
 int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights);
 ```
 
-Performs barycentric interpolation within a tessellation. This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant given by `point[3]`. The indices of the points will be written to the values at `*indices`, and their respective weights written to `*weights`. In the case where the number of points $N$ is less than 4, only the first $N$ values in each output array will be written.
+Performs barycentric interpolation within a triangulation. This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant given by `point[3]`. The indices of the points will be written to the values at `*indices`, and their respective weights written to `*weights`. In the case where the number of points $N$ is less than 4, only the first $N$ values in each output array will be written.
+
+This is the recommended interpolation function.
 
 ### Natural Neighbour Interpolation
 
@@ -59,13 +61,15 @@ In addition to standard barycentric interplation, Tetrapal is able to perform [n
 
 In theory number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to guarantee success it is advised to ensure that the output arrays are at least as large as the number of vertices in the triangulation.
 
+Because the function may fail, it is recommended to use barycentric interpolation for most cases. Natural neighbour interpolation is much slower and the resulting dither may not be perceptually better than barycentric interpolation.
+
 ### Nearest Neighbour Interpolation
 
 ```c
 int tetrapal_nearest_neighbour(const Tetrapal* tetrapal, const float point[3]);
 ```
 
-Tetrapal also supports nearest-neighbour queries within the tessellation. This can be faster than a standard linear search under the right circumstances. It is included for convenience.
+Tetrapal also supports nearest-neighbour queries within the triangulation. This can be faster than a standard linear search under the right circumstances. It is included for convenience.
 
 Returns the index of the nearest neighbour to the query point defined by `point[3]`.
 
