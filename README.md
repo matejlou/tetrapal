@@ -1,6 +1,6 @@
 # Tetrapal
 
-![tetrapal_banner_e](https://github.com/matejlou/Tetrapal/assets/120740455/0b82367d-eb12-4c6f-aa5c-705c9171e51a)
+![tetrapal_banner_f](https://github.com/matejlou/Tetrapal/assets/120740455/08e48e4b-1620-474e-9a7b-09b198ada4c2)
 
 Creates a tetrahedral tessellation from a colour palette via 3D Delaunay triangulation. Intended for use in arbitrary-palette colour image dithering.
 
@@ -10,9 +10,9 @@ Tetrapal is shorthand for _tetrahedral palette_. It is a utility that takes a se
 
 The main motivation behind this library is to enable an efficient implementation of colour image [ordered dithering](https://en.wikipedia.org/wiki/Ordered_dithering) for irregular palettes. Typically, ordered dithering is only optimal when the palette contains colours that are equally distributed in colour space, i.e. that they form a regular grid. However, the algorithm can be modified to accommodate irregular or arbitrary palettes by representing input colours as the weighted sum of a number of existing palette colours. Tetrapal provides a data structure that can determine the necessary weights much faster and with more precision than existing implementations.
 
-| Palette | Typical Algorithm | Tetrapal Algorithm |
-|-|-|-|
-|![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/56246eaf-62ab-4484-82be-44b6c2df3700)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
+| Typical Algorithm | Tetrapal Algorithm |
+|-|-|
+|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
 
 The idea to use a 3D triangulated irregular network as a means to dither colour images is not a new one. The earliest source I could find that describes such an implementation is the 1988 article "_Using tetrahedrons for dithering color pictures_" by Eduard Gröller and Werner Purgathofer[^1]. However, the technique remains relatively unknown and unused in common practice, at least on the web. To my knowledge, this repository is the first and only public implementation available online.
 
@@ -193,8 +193,8 @@ The three tables below compare the running time of a Tetrapal-based ordered dith
 
 | Palette Size | Tetrapal   | Knoll   | Yliluoma | | Matrix Size | Tetrapal | Knoll   | Yliluoma  | | Image Size | Tetrapal | Knoll   | Yliluoma  |
 | :--          | :-:        | :-:     | :-:      |-| :--         | :-:      | :-:     | :-:       |-| :--        | :-:      | :-:     | :-:       |
-| 8            | 0.091s     | 0.830s  | 6.923s   | | 2x2         | ----s   | 0.100s  | 0.364s    | | 128x128    | 0.010s   | 0.092s  | 1.089s    |
-| 16           | 0.133s     | 1.457s  | 14.837s  | | 4x4         | 0.140s   | 0.392s  | 2.882s    | | 256x256    | 0.038s   | 0.365s  | 4.226s    |
+| 8            | 0.091s     | 0.830s  | 6.923s   | | 2x2         | 0.127s   | 0.100s  | 0.364s    | | 128x128    | 0.010s   | 0.092s  | 1.089s    |
+| 16           | 0.133s     | 1.457s  | 14.837s  | | 4x4         | 0.118s   | 0.392s  | 2.882s    | | 256x256    | 0.038s   | 0.365s  | 4.226s    |
 | 32           | 0.146s     | 2.733s  | 30.529s  | | 8x8         | 0.122s   | 1.494s  | 17.032s   | | 512x512    | 0.146s   | 1.455s  | 16.587s   |
 | 64           | 0.166s     | 5.240s  | 61.521s  | | 16x16       | 0.128s   | 5.676s  | 92.412s   | | 1024x1024  | 0.523s   | 5.658s  | 65.638s   |
 | 128          | 0.178s     | 10.194s | 126.047s | | 32x32       | 0.124s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
@@ -223,21 +223,29 @@ Knoll and Yliluoma score exactly the same for each image, while the Tetrapal alg
 
 ## Memory
 
-This next table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size $N$ of the threshold matrix in the worst case, which is usually <1KB).
+This table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size $N$ of the threshold matrix in the worst case, which is usually <1KB).
 
 | Palette Size | 8     | 16    | 32    | 64    | 128   | 256   |
 | :--          | :-:   | :-:   | :-:   | :-:   | :-:   | :-:   | 
 | **Memory**   | 2KB   | 4KB   | 8KB   | 16KB  | 32KB  | 64KB  |
 
-## Visual Comparison
+## Visuals
 
-Finally, here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output is virtually identical to Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
+Here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output is virtually identical to Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
 
 | Algorithm     | Test Image 1 | Test Image 2 |
 | :-:           | :-:      | :-: |
 | **Tetrapal**  |![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/f3770dee-6aab-4e01-865c-20c98172656d)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/4958488d-ee14-434d-8a5b-b4c71b410638)|
 | **Knoll**     |![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/ec6dd924-d308-47e8-851a-23a4e8775bcf)|![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/26de6284-d730-42cc-812a-f871872d2ef0)|
 | **Standard**  |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/280ea9c6-d8df-42df-b86d-88e83a472663)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/5fc44c0f-18b5-4b6c-b3e0-2acfc5b9ba8d)|
+
+## Interpolation
+
+These final images are intended to show the visual difference between dithering via barycentric interpolation and natural neighbour interpolation. A 256x256 void-and-cluster threshold matrix was used for both images. In general, natural neighbour dithering produces perceptually smoother gradations but introduces more high-frequency noise as a result of considering a greater number of candidate colours per pixel. This can best be seen in the appearance of the sky in each of the example images.
+
+| Barycentric | Natural Neighbour |
+| :-:         | :-:               |
+|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/d85c74e4-db01-4188-9c94-59827db79399)|![output_NATURAL_NEIGHBOUR](https://github.com/matejlou/Tetrapal/assets/120740455/8d3fc6a3-4556-47c5-a7ab-8d10c22d972a)|
 
 [^1]: E. Gröller and W. Purgathofer, "_Using tetrahedrons for dithering color pictures_" (1988).
 
