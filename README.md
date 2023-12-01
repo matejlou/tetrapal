@@ -6,9 +6,9 @@ Creates a tetrahedral tessellation from a colour palette via 3D Delaunay triangu
 
 # What is Tetrapal?
 
-Tetrapal is shorthand for _tetrahedral palette_. It is a utility that takes a set of points in colour space and forms a [triangulated irregular network](https://en.wikipedia.org/wiki/Triangulated_irregular_network) of tetrahedra. As a result, any colour can be represented as the weighted sum of up to 4 existing palette colours.
+Tetrapal is shorthand for _tetrahedral palette_. It is a utility that takes a set of points in colour space and forms a [triangulated irregular network](https://en.wikipedia.org/wiki/Triangulated_irregular_network) of tetrahedra. As a result, any colour can be represented as the weighted sum of a number of existing palette colours.
 
-The main motivation behind this library is to enable an efficient implementation of colour image [ordered dithering](https://en.wikipedia.org/wiki/Ordered_dithering) for irregular palettes. Typically, ordered dithering is only optimal when the palette contains colours that are equally distributed in colour space, i.e. that they form a regular grid. However, the algorithm can be modified to accommodate irregular or arbitrary palettes by representing input colours as the weighted sum of a number of existing palette colours. Tetrapal provides a data structure that can determine the necessary weights much faster and with more precision than existing implementations.
+The main motivation behind this library is to enable an efficient implementation of colour image [ordered dithering](https://en.wikipedia.org/wiki/Ordered_dithering) for irregular palettes. Typically, ordered dithering is only optimal when the palette contains colours that are equally distributed in colour space, i.e. that they form a regular grid. However, the algorithm can be modified to accommodate irregular or arbitrary palettes by representing input colours as the weighted sum of existing palette colours. Tetrapal provides a data structure that can determine the necessary weights much faster and with more precision than existing implementations.
 
 | Typical Algorithm | Tetrapal Algorithm |
 |-|-|
@@ -30,7 +30,7 @@ $$\Huge{[x_0, y_0, z_0, x_1, y_1, z_1, ... x_{size-1}, y_{size-1}, z_{size-1]}}$
 
 Where `size` is the number of points represented in the buffer. Internally, points are indexed according to the order they appear in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`.
 
-Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond this range will be clamped. Internally, coordinates are transformed and represented as integers with 16 bits of precision.
+Tetrapal expects coordinate values to be in the range [0.0, 1.0]. Values beyond this range will be clamped. Internally, coordinates are transformed and represented as integers with 16 bits of precision.
 
 ## Free Triangulation
 
@@ -38,7 +38,7 @@ Tetrapal expects coordinate values to be in the range 0.0 to 1.0; values beyond 
 void tetrapal_free(Tetrapal* tetrapal);
 ```
 
-Triangulation data can be safely freed by passing the `Tetrapal` pointer to the above function.
+Triangulation data can safely be freed by passing the `Tetrapal` pointer to the above function.
 
 ## Interpolation
 ### Barycentric Interpolation
@@ -49,9 +49,9 @@ int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* in
 
 Performs barycentric interpolation within a triangulation. This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant given by `point[3]`. The indices of the points will be written to the values at `*indices`, and their respective weights written to `*weights`. In the case where the number of points $N$ is less than 4, only the first $N$ values in each output array will be written. 
 
-Naturally, the output arrays should be large enough to hold the maximum expected number of points, which is equivalent to `tetrapal_element_size`.
+Naturally, the output arrays should be large enough to hold the maximum expected number of points, which is equivalent to `tetrapal_element_size` (please refer to the utlity functions section).
 
-This is the recommended interpolation function as it provides the best combination of quality and performance.
+This is the recommended interpolation function as it provides the best combination of stability, quality, and performance.
 
 ### Natural Neighbour Interpolation
 
@@ -61,9 +61,9 @@ int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], i
 
 In addition to standard barycentric interplation, Tetrapal is able to perform [natural neighbour interpolation](https://en.wikipedia.org/wiki/Natural_neighbor_interpolation) as well. This function returns an `int` specifiying the number of natural neighbours contributing to the interpolant given by `point[3]`. The size of the output arrays `*indices` and `*weights` should be given by the parameter `size`. It is possible for this function to fail, either due to a lack of available system memory or because the number of natural neighbours exceeds the size of the output arrays. In both cases, the function will return 0. 
 
-In theory number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to guarantee success it is advised that the output arrays are at least as large as the number of vertices in the triangulation.
+In theory number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to avoid failure it is advised that the output arrays are at least as large as the number of vertices in the triangulation.
 
-Because the function may fail, it is recommended to use barycentric interpolation for most cases. Natural neighbour interpolation is much slower and the resulting dither quality may not be much better than barycentric interpolation, perceptually speaking.
+It is recommended to use barycentric interpolation for most cases. Natural neighbour interpolation is much slower and the resulting dither quality may not be much better than barycentric interpolation, perceptually speaking.
 
 ### Nearest Neighbour Interpolation
 
@@ -173,7 +173,7 @@ void dither_image(const float *input, const int image_width, const int image_hei
 
 # Implementation
 
-Tetrapal implements 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). It borrows ideas from computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of symbolic 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). Coincident points are ignored during triangulation but are still stored internally to maintain consistency when indexing vertices. 
+Tetrapal implements 3D Delaunay triangulation using the [Bowyer-Watson incremental construction algorithm](https://en.wikipedia.org/wiki/Bowyer%E2%80%93Watson_algorithm). It borrows ideas from popular computational geometry libraries such as [CGAL](https://www.cgal.org/) and [Geogram](https://github.com/BrunoLevy/geogram) to ensure accuracy and correctness. This includes the use of symbolic 'infinite' vertices to guarantee convexity, as well as the ability to gracefully handle degenerate inputs in the form of lower-dimensional triangulations (2D, 1D, 0D). Coincident points are ignored during triangulation but are still stored internally to maintain consistency when indexing vertices. 
 
 A combination of extended precision integer arithmetic and static filtering via predetermined error bounds[^2] is used to provide robustness for geometric predicates in cases where standard arithmetic may fail to give an accurate result.
 
@@ -184,6 +184,7 @@ Point location is performed via remembering stochastic walk[^3], where a kd-tree
 As its main purpose is to process colour palettes, some assumptions have been made to simplify the algorithm. However, Tetrapal can still be used as a general-purpose Delaunay triangulation library provided its limitations are observed. These include:
 * That it expects the input to be normalised between 0.0 and 1.0.
 * That the desired precision of the input does not exceed 1 / 65535.
+* It lacks many features compared to more mature libraries.
 
 # Performance & Comparison
 
@@ -223,7 +224,7 @@ Knoll and Yliluoma score exactly the same for each image, while the Tetrapal alg
 
 ## Memory
 
-This table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size $N$ of the threshold matrix in the worst case, which is usually <1KB).
+This table records the size in memory of the Tetrapal data structure for various palette sizes, with random colours generated uniformly inside the unit cube. The memory consumption of the Knoll and Yliluoma algorithms that were implemented were trivial (equivalent to the size of the threshold matrix in the worst case, which is usually <1KB).
 
 | Palette Size | 8     | 16    | 32    | 64    | 128   | 256   |
 | :--          | :-:   | :-:   | :-:   | :-:   | :-:   | :-:   | 
@@ -231,7 +232,7 @@ This table records the size in memory of the Tetrapal data structure for various
 
 ## Visuals
 
-Here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output is virtually identical to Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
+Here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output was virtually identical to that of Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
 
 | Algorithm     | Test Image 1 | Test Image 2 |
 | :-:           | :-:      | :-: |
