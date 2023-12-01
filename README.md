@@ -90,7 +90,7 @@ Returns the number of real elements (simplices) in the triangulation, i.e. does 
 int tetrapal_number_of_dimensions(const Tetrapal* tetrapal);
 ```
 
-Returns the number of dimensions spanned by the triangulation. This can range anywhere from 0 to 3. A value of -1 indicates a null triangulation.
+Returns the number of dimensions spanned by the triangulation. Valid dimensions range from 0 to 3. A value of -1 indicates a null triangulation.
 
 ### Element Size
 
