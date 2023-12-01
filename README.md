@@ -61,7 +61,7 @@ int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], i
 
 In addition to standard barycentric interplation, Tetrapal is able to perform [natural neighbour interpolation](https://en.wikipedia.org/wiki/Natural_neighbor_interpolation) as well. This function returns an `int` specifiying the number of natural neighbours contributing to the interpolant given by `point[3]`. The size of the output arrays `*indices` and `*weights` should be given by the parameter `size`. It is possible for this function to fail, either due to a lack of available system memory or because the number of natural neighbours exceeds the size of the output arrays. In both cases, the function will return 0. 
 
-In theory number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to avoid failure it is advised that the output arrays are at least as large as the number of vertices in the triangulation.
+In theory the number of natural neighbours for a given input point can range from 1 to the total number of vertices in the triangulation. In practice the maximum number is much lower for most point sets. However, to avoid failure it is advised that the output arrays are at least as large as the number of vertices in the triangulation.
 
 It is recommended to use barycentric interpolation for most cases. Natural neighbour interpolation is much slower and the resulting dither quality may not be much better than barycentric interpolation, perceptually speaking.
 
