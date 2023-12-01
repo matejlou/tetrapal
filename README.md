@@ -30,7 +30,7 @@ $$\Huge{[x_0, y_0, z_0, x_1, y_1, z_1, ... x_{size-1}, y_{size-1}, z_{size-1]}}$
 
 Where `size` is the number of points represented in the buffer. Internally, points are indexed according to the order they appear in the buffer, where the starting index is 0. If successful this function will return an opaque pointer to the Tetrapal data structure, otherwise it will return `NULL`.
 
-Tetrapal expects coordinate values to be in the range [0.0, 1.0]. Values beyond this range will be clamped. Internally, coordinates are transformed and represented as integers with 16 bits of precision.
+Tetrapal expects coordinate values to be in the range 0.0 to 1.0. Values beyond this range will be clamped. Internally, coordinates are transformed and represented as integers with 16 bits of precision.
 
 ## Free Triangulation
 
