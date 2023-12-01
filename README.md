@@ -1,6 +1,6 @@
 # Tetrapal
 
-![tetrapal_banner_f](https://github.com/matejlou/Tetrapal/assets/120740455/08e48e4b-1620-474e-9a7b-09b198ada4c2)
+![tetrapal_banner_g](https://github.com/matejlou/Tetrapal/assets/120740455/a95a2216-1594-4ca5-b845-cbd5bf272336)
 
 Creates a tetrahedral tessellation from a colour palette via 3D Delaunay triangulation. Intended for use in arbitrary-palette colour image dithering.
 
