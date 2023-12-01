@@ -106,7 +106,7 @@ Gets the size of an element in the triangulation, or in other words, the number 
 int tetrapal_get_elements(const Tetrapal* tetrapal, int* buffer);
 ```
 
-Writes raw geometry data directly into `*buffer`. Every element is represented by a set of vertex indices which are packed contiguously into the buffer. Thus, the size of the buffer must be _no less_ than the number of elements present in the triangulation multiplied by the number of indices representing each element, or `tetrapal_number_of_elements` × `tetrapal_element_size`.
+Writes raw geometry data directly into `*buffer`. Each element is represented by a set of vertex indices which are packed contiguously into the buffer. Thus, the size of the buffer must be _no less_ than the number of elements present in the triangulation multiplied by the number of indices representing each element, or `tetrapal_number_of_elements` × `tetrapal_element_size`.
 
 # Example Usage
 
