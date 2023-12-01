@@ -242,7 +242,7 @@ Here is a visual comparison between the dithered output of Tetrapal, Knoll, and 
 
 ## Interpolation
 
-These final images are intended to show the visual difference between dithering via barycentric interpolation and natural neighbour interpolation. A 256x256 void-and-cluster threshold matrix was used for both images. In general, natural neighbour dithering produces perceptually smoother gradations but introduces more high-frequency noise as a result of considering a greater number of candidate colours per pixel. This can best be seen in the appearance of the sky in each of the example images.
+These final images illustrate the visual differences between dithering via barycentric interpolation and natural neighbour interpolation. A 256x256 void-and-cluster threshold matrix was used for both images. In general, natural neighbour dithering produces perceptually smoother gradations but introduces more high-frequency noise as a result of considering a greater number of candidate colours per pixel. This can best be seen in the appearance of the sky in each of the example images.
 
 | Barycentric | Natural Neighbour |
 | :-:         | :-:               |
