@@ -49,7 +49,7 @@ int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* in
 
 Performs barycentric interpolation within a triangulation. This will return an `int` between 1 and 4 depending on the number of points contributing to the interpolant given by `point[3]`. The indices of the points will be written to the values at `*indices`, and their respective weights written to `*weights`. In the case where the number of points $N$ is less than 4, only the first $N$ values in each output array will be written. 
 
-The output arrays should be large enough to hold the maximum expected number of points, which is equivalent to `tetrapal_element_size` (please refer to the utlity functions section).
+The output arrays should be large enough to hold the maximum expected number of points, which is equivalent to `tetrapal_element_size` (please refer to the utility functions section).
 
 This is the recommended interpolation function as it provides the best combination of stability, quality, and performance.
 
