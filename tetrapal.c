@@ -28,24 +28,25 @@
 #endif
 
 /* Maximum value of any unsigned integer type. */
-#define max_of_unsigned(T) (T)(~(T)0) 
+#define max_of_unsigned(T) ((T)(~(T)0)) 
 
 /* True/false macro constants. */
 #define true 1
 #define false 0
 
 /* Typedefs for internal use. */
-typedef float coord_t; /* Type for representing a floating-point coordinate. */
-typedef signed long vertex_t; /* Type for representing a global vertex index. */
-typedef unsigned long simplex_t; /* Type for representing the global simplex index. */
-typedef unsigned char facet_t; /* Type for representing the global cavity facet index. */
-typedef unsigned char local_t; /* Type for representing a local index. */
+typedef float coord_t; /* Type representing a floating-point coordinate. */
+typedef signed long vertex_t; /* Type representing a global vertex index. */
+typedef unsigned long simplex_t; /* Type representing the global simplex index. */
+typedef unsigned char facet_t; /* Type representing the cavity facet global index. */
+typedef unsigned char local_t; /* Type representing a local index. */
 typedef signed long error_t; /* Type representing an error code. */
 typedef unsigned char flags_t; /* Type representing a set of bit-flags. */
 typedef unsigned long random_t; /* Type representing a random integer. */
-typedef unsigned long long digit_t; /* Type representing a digit, used for exact airthmetic. */
+typedef unsigned long long digit_t; /* Type representing a digit; used for exact airthmetic. */
 typedef unsigned char bool; /* Type representing a boolean. */
 
+/* Internal constants. */
 static const vertex_t VERTEX_INFINITE = -1; /* Value representing the infinite vertex. */
 static const simplex_t SIMPLEX_NULL = max_of_unsigned(simplex_t); /* Value representing a null or invalid simplex. */
 static const facet_t FACET_NULL = max_of_unsigned(facet_t); /* Value representing a null or invalid facet. */
@@ -53,8 +54,9 @@ static const local_t LOCAL_NULL = max_of_unsigned(local_t); /* Value representin
 static const random_t RANDOM_MAX = 0xffff; /* Maximum value of a randomly generated integer. */
 static const double ARRAY_GROWTH_FACTOR = 1.618; /* Amount to resize arrays when capacity is reached. */
 static const double CAVITY_TABLE_MAX_LOAD = 0.7; /* Maximum load factor of the cavity hash table. */
+static const facet_t CAVITY_TABLE_FREE = max_of_unsigned(facet_t); /* Value representing a free element in the cavity hash table. */
 
-/* Error codes. */
+/* Internal error codes. */
 typedef enum
 {
 	ERROR_NONE,
@@ -64,10 +66,11 @@ typedef enum
 } ErrorCode;
 
 /* Internal hard-coded maximum value of a given coordinate.
-	Input points are expected to be given in the 0.0 to 1.0 range, and are then scaled by this amount.
-	This value has been chosen because it allows for accurate representation of linear sRGB without loss of precision.
-	Additionally, knowing the maximum possible bit length of a coordinate makes exact computation of geometric predicates simpler. */
-static const coord_t TETRAPAL_PRECISION = (1u << 16u) - 1;
+	Input points are expected to be given in the range [0.0, 1.0], and are then scaled by this amount.
+	This value has been chosen because it allows for accurate representation of linear sRGB values without loss of precision.
+	Additionally, knowing the maximum possible bit length of a coordinate makes exact computation of geometric predicates simpler.
+	Do NOT increase this value if you want the triangulation to remain robust. */
+static const coord_t TETRAPAL_PRECISION = (1u << 16u) - 1u;
 
 /********************************/
 /*		Vector Maths			*/
@@ -161,10 +164,10 @@ static inline bool int128_lt_abs(const int128_t a, const int128_t b);
 	input coordinates consist of integer values whose maximum representable bit length is 
 	known in advance.
 
-	Because of this, it is possible to predetermine conservative error bounds for each
+	Because of this, it is possible to determine conservative error bounds for each
 	predicate before runtime, assuming arithmetic is performed using double precision floats.
 
-	In most cases the maximum error is 0, and no specialised exact arithmetic is ever needed.
+	For most predicates the maximum error is 0, and no specialised exact arithmetic is ever needed.
 
 	Otherwise, the error bounds acts as a static filter that only performs exact arithmetic
 	when the magnitude of the approximate result exceeds the maximum error. 
@@ -265,9 +268,6 @@ static void kdtree_print_recurse(const Tetrapal* tetrapal, size_t begin, size_t 
 /********************************/
 /*		Cavity					*/
 /********************************/
-
-/* Value representing a free element in the cavity hash table. */
-static const facet_t CAVITY_TABLE_FREE = max_of_unsigned(facet_t); 
 
 typedef struct
 {
@@ -530,9 +530,6 @@ static inline void transform_3d(const float in[3], coord_t out[3]);
 
 /* Create a new tetrahedron [a, b, c, d] with positive orientation. Returns the global index of the new tetrahedron. */
 static simplex_t new_tetrahedron(Tetrapal* tetrapal, vertex_t a, vertex_t b, vertex_t c, vertex_t d);
-
-/* Get the next tetrahedron around the oriented edge [a, b] (i.e. the tetrahedron adjacent to the facet [a, b, (c)]. */
-//static simplex_t next_around_edge(Tetrapal* tetrapal, simplex_t t, vertex_t a, vertex_t b);
 
 /********************************/
 /*		2D Triangulation		*/
@@ -1680,7 +1677,7 @@ int tetrapal_interpolate(const Tetrapal* tetrapal, const float point[3], int* in
 	}
 }
 
-int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights, int size)
+int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], int* indices, float* weights, const int size)
 {
 	if (tetrapal == NULL)
 		return 0;
@@ -1690,11 +1687,11 @@ int tetrapal_natural_neighbour(const Tetrapal* tetrapal, const float point[3], i
 	switch (tetrapal->dimensions)
 	{
 	case 0:
-		return (int)interpolate_0d(indices, weights);
+		return size < 1 ? 0 : (int)interpolate_0d(indices, weights);
 
 	case 1:
 		transform_1d(tetrapal, point, p);
-		return (int)interpolate_1d(tetrapal, p, indices, weights);
+		return size < 2 ? 0 : (int)interpolate_1d(tetrapal, p, indices, weights);
 
 	case 2:
 		transform_2d(tetrapal, point, p);
@@ -1774,6 +1771,14 @@ int tetrapal_number_of_elements(const Tetrapal* tetrapal)
 	default:
 		return 0;
 	}
+}
+
+int tetrapal_number_of_dimensions(const Tetrapal* tetrapal)
+{
+	if (tetrapal == NULL)
+		return -1;
+
+	return (int)tetrapal->dimensions;
 }
 
 int tetrapal_element_size(const Tetrapal* tetrapal)
@@ -2506,16 +2511,12 @@ static error_t triangulate_3d(Tetrapal* tetrapal, vertex_t v[4], const float* po
 	}
 
 	/* Set vertex-to-simplex incidence. */
-	for (t = 0; t < tetrapal->simplices.count; t++)
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
 	{
-		if (is_infinite_simplex(tetrapal, t))
-			continue;
+		t = locate_3d(tetrapal, &tetrapal->vertices.coordinates[i * 3]);
+		tetrapal->vertices.incident_simplex[i] = t;
 
-		for (local_t i = 0; i < 4; i++)
-		{
-			vertex_t vt = get_incident_vertex(tetrapal, t, i);
-			tetrapal->vertices.incident_simplex[vt] = t;
-		}
+		TETRAPAL_ASSERT(is_infinite_simplex(tetrapal, t) == false, "Incident simplex was infinite!\n");
 	}
 
 	/* Free intermediate structures. */
@@ -3363,16 +3364,13 @@ static error_t triangulate_2d(Tetrapal* tetrapal, vertex_t v[3], const float* po
 	}
 
 	/* Set vertex-to-simplex incidence. */
-	for (t = 0; t < tetrapal->simplices.count; t++)
+		/* Set vertex-to-simplex incidence. */
+	for (vertex_t i = 0; i < (vertex_t)size; i++)
 	{
-		if (is_infinite_simplex(tetrapal, t))
-			continue;
+		t = locate_2d(tetrapal, &tetrapal->vertices.coordinates[i * 3]);
+		tetrapal->vertices.incident_simplex[i] = t;
 
-		for (local_t i = 0; i < 3; i++)
-		{
-			vertex_t vt = get_incident_vertex(tetrapal, t, i);
-			tetrapal->vertices.incident_simplex[vt] = t;
-		}
+		TETRAPAL_ASSERT(is_infinite_simplex(tetrapal, t) == false, "Incident simplex was infinite!\n");
 	}
 
 	/* Free intermediate structures. */
@@ -4136,6 +4134,10 @@ static size_t natural_neighbour_2d(const Tetrapal* tetrapal, coord_t point[2], i
 	/* Point is outside the convex hull.*/
 	if (enclosing.count < 3)
 	{
+		/* Not enough space in array to hold result. */
+		if (size < enclosing.count)
+			return 0;
+
 		for (size_t i = 0; i < enclosing.count; i++)
 		{
 			indices[i] = enclosing.indices[i];
@@ -4285,6 +4287,9 @@ static size_t natural_neighbour_3d(const Tetrapal* tetrapal, coord_t point[3], i
 	/* If the point is outside the convex hull, project it and fall back to linear interpolation. */
 	if (enclosing.count < 4)
 	{
+		if (size < enclosing.count)
+			return 0;
+
 		for (size_t i = 0; i < enclosing.count; i++)
 		{
 			indices[i] = enclosing.indices[i];
