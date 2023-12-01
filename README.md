@@ -201,7 +201,7 @@ The three tables below compare the running time of a Tetrapal-based ordered dith
 | 128          | 0.178s     | 10.194s | 126.047s | | 32x32       | 0.124s   | 22.421s | 470.400s  | | 2048x2048  | 2.039s   | 22.222s | 262.450s  |
 | 256          | 0.186s     | 20.072s | 257.878s | | 64x64       | 0.129s   | 88.046s | 2297.365s | | 4096x4096  | 8.272s   | 87.802s | 1056.591s |
 
-Tetrapal is faster in almost all cases. This is because both Knoll and Yliluoma are iterative algorithms whose time complexity is a factor of both the palette size $n$ as well as the number of candidates $m$ per pixel, which for optimal results is typically proportional to the size of the threshold matrix. Tetrapal's time complexity is bounded by its point location routine, which is shown to have an expected running time of $O(n^{1/4})$[^6]. The table below shows the theoretical worst-case time complexity for each algorithm.
+Tetrapal is faster in almost all cases. This is because both Knoll and Yliluoma are iterative algorithms whose time complexity is a factor of both the palette size $n$ as well as the number of candidates $m$ per pixel, which for optimal results is typically proportional to the size of the threshold matrix. Tetrapal's time complexity is bounded by its point location routine, which is shown to have an expected running time of $O(n^{1/4})$[^6]. The table below shows the time complexity for each algorithm.
 
 | Algorithm      | Tetrapal       | Knoll         | Yliluoma     |
 | :--            | :-:            | :-:           | :-:          |
