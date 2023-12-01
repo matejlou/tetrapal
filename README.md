@@ -14,7 +14,7 @@ The main motivation behind this library is to enable an efficient implementation
 |-|-|
 |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
 
-The idea to use a 3D triangulated irregular network as a means to dither colour images is not a new one. The earliest source I could find that describes such an implementation is the 1988 article "_Using tetrahedrons for dithering color pictures_" by Eduard Gröller and Werner Purgathofer[^1]. However, the technique remains relatively unknown and unused in common practice, at least on the web. To my knowledge, this repository is the first and only public implementation available online.
+The idea to use a 3D triangulated irregular network as a means to dither colour images is not a new one. The earliest source I could find that describes such an implementation is the 1988 article "_Using tetrahedrons for dithering color pictures_" by Eduard Gröller and Werner Purgathofer[^1]. However, references to this technique online are scarce. To my knowledge, this repository is the only public implementation of its kind.
 
 # How to Use
 
