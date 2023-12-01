@@ -12,7 +12,7 @@ The main motivation behind this library is to enable an efficient implementation
 
 | Typical Algorithm | Tetrapal Algorithm |
 |-|-|
-|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/def812c7-a231-432e-9906-96edab438bbf)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
+|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/fc607ebd-efd6-4226-a79c-b759bd763a81)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/c1c69d07-069f-4558-862a-b19783f89401)|
 
 The idea to use a 3D triangulated irregular network as a means to dither colour images is not a new one. The earliest source I could find that describes such an implementation is the 1988 article "_Using tetrahedrons for dithering color pictures_" by Eduard Gröller and Werner Purgathofer[^1]. However, references to this technique online are scarce. To my knowledge, this repository is the only public implementation of its kind.
 
@@ -238,7 +238,7 @@ Here is a visual comparison between the dithered output of Tetrapal, Knoll, and 
 | :-:           | :-:      | :-: |
 | **Tetrapal**  |![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/f3770dee-6aab-4e01-865c-20c98172656d)|![output_DELAUNAY](https://github.com/matejlou/Tetrapal/assets/120740455/4958488d-ee14-434d-8a5b-b4c71b410638)|
 | **Knoll**     |![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/ec6dd924-d308-47e8-851a-23a4e8775bcf)|![output_KNOLL](https://github.com/matejlou/Tetrapal/assets/120740455/26de6284-d730-42cc-812a-f871872d2ef0)|
-| **Standard**  |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/280ea9c6-d8df-42df-b86d-88e83a472663)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/5fc44c0f-18b5-4b6c-b3e0-2acfc5b9ba8d)|
+| **Standard**  |![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/882edb3f-b658-48d5-9e55-be1211ef8bc7)|![output_THRESHOLD](https://github.com/matejlou/Tetrapal/assets/120740455/8272061f-4362-4cde-b99e-f8b12de4aa0e)|
 
 ## Interpolation
 
