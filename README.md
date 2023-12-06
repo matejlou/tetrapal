@@ -215,8 +215,8 @@ This table shows the [peak signal-to-noise ratio](https://en.wikipedia.org/wiki/
 | :--                | :-:      | :-:      | :-:      |-|
 | [Peppers](https://www.hlevkin.com/hlevkin/TestImages/pepper.bmp) (Custom)   | 27.17dB  | 27.03dB  | 27.03dB  | ![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/1140a0d4-f710-4e19-980e-2c0634bbc6f5)|
 | [Peppers](https://www.hlevkin.com/hlevkin/TestImages/pepper.bmp) (Adaptive) | 24.33dB  | 24.37dB  | 24.37dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/ee06b360-2686-444b-83b2-03dd671e2e29)|
-| [Baboon](https://www.hlevkin.com/hlevkin/TestImages/baboon.bmp) (Custom)    | 21.14dB  | 21.10dB  | 21.10dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/bbcf7aba-fa59-42c7-bfc7-c55179d8f51e)|
-| [Baboon](https://www.hlevkin.com/hlevkin/TestImages/baboon.bmp) (Adaptive)  | 20.58dB  | 20.61dB  | 20.61dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/dc6883cd-565e-4617-b93e-46f5422e6dc1)|
+| [Mandrill](https://www.hlevkin.com/hlevkin/TestImages/baboon.bmp) (Custom)    | 21.14dB  | 21.10dB  | 21.10dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/bbcf7aba-fa59-42c7-bfc7-c55179d8f51e)|
+| [Mandrill](https://www.hlevkin.com/hlevkin/TestImages/baboon.bmp) (Adaptive)  | 20.58dB  | 20.61dB  | 20.61dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/dc6883cd-565e-4617-b93e-46f5422e6dc1)|
 | [Parrots](https://r0k.us/graphics/kodak/kodak/kodim23.png) (Custom)   | 27.77dB  | 27.65dB  | 27.65dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/0c17aae1-8d36-49fc-a418-efc701f9dc6e)|
 | [Parrots](https://r0k.us/graphics/kodak/kodak/kodim23.png) (Adaptive) | 20.42dB  | 20.42dB  | 20.42dB  |![output_PALETTE](https://github.com/matejlou/Tetrapal/assets/120740455/a8549e82-9409-457e-b605-c134041b755f)|
 
