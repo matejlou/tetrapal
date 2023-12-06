@@ -232,7 +232,7 @@ This table records the size in memory of the Tetrapal data structure for various
 
 ## Visuals
 
-Here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. Yliluoma has been omitted as the output was virtually identical to that of Knoll. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
+Here is a visual comparison between the dithered output of Tetrapal, Knoll, and a standard implementation of ordered dithering. The 16-colour [CGA](https://en.wikipedia.org/wiki/Color_Graphics_Adapter) palette was used.
 
 | Algorithm     | Test Image 1 | Test Image 2 |
 | :-:           | :-:      | :-: |
